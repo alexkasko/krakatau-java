@@ -14,6 +14,8 @@ It allows to use all Krakatau operations (disassembler, assembler and decompiler
 It also contains standalone java compiler ([eclipse ecj](http://www.eclipse.org/jdt/core/)) that allows to compile
 Java sources with the API similar to other operations.
 
+Javadocs are available [here](http://alexkasko.com/krakatau-java/javadocs/).
+
 Library dependency (from maven central):
 
     <dependency>
@@ -58,12 +60,15 @@ Command line tool
 Command line tool was created mainly for testing purposes, Jython slow startup make it impractical comparing to
 original Krakatau.
 
+Download [krakatau.jar-1.0](https://bitbucket.org/alexkasko/share/downloads/krakatau-1.0.jar) ([sha256sum](http://alexkasko.com/krakatau-java/checksums/krakatau-1.0.jar.sha256)).
+
 Maven plugin
 ------------
 
 This maven plugin is a kind of poor-man's IDE plugin for disassemble and decompilation of Java classes.
 Plugin may be configured in pom file to be run from command line (or IDE interface) as follows
-([pom example](https://github.com/alexkasko/krakatau-java/blob/master/krakatau-maven-plugin-test/pom.xml)):
+(see [pom example](https://github.com/alexkasko/krakatau-java/blob/master/krakatau-maven-plugin-test/pom.xml#L53)
+and maven-generated [plugin site](http://alexkasko.com/krakatau-java/site/)):
 
     mvn krakatau:assemble
     mvn krakatau:disassemble
