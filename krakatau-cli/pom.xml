@@ -3,7 +3,6 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-
     <parent>
         <groupId>com.alexkasko.krakatau</groupId>
         <artifactId>krakatau-java</artifactId>
@@ -11,6 +10,34 @@
     </parent>
     <artifactId>krakatau-cli</artifactId>
     <name>Krakatau Java Assembler Command Line Frontend</name>
+
+    <description>
+        Command line interface assembler, disassebmler, decompiler and compiler tools for Java.
+    </description>
+    <url>https://github.com/alexkasko/krakatau-java</url>
+    <licenses>
+        <license>
+            <name>GNU Pubic License 3.0</name>
+            <url>http://opensource.org/licenses/gpl-3.0.html</url>
+        </license>
+    </licenses>
+    <scm>
+        <url>https://github.com/alexkasko/krakatau-java</url>
+        <connection>scm:git:https://github.com/alexkasko/krakatau-java.git</connection>
+        <developerConnection>scm:git:https://github.com/alexkasko/krakatau-java.git</developerConnection>
+        <tag>HEAD</tag>
+    </scm>
+    <developers>
+        <developer>
+            <name>Robert Grosse</name>
+            <url>https://github.com/Storyyeller</url>
+        </developer>
+        <developer>
+            <name>Alex Kasko</name>
+            <email>alex.kasko.mail@gmail.com</email>
+            <url>http://alexkasko.com</url>
+        </developer>
+    </developers>
 
     <properties>
         <project.main_class>com.alexkasko.krakatau.cli.Launcher</project.main_class>

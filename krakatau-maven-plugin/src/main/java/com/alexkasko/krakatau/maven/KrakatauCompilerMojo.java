@@ -2,6 +2,7 @@ package com.alexkasko.krakatau.maven;
 
 import com.alexkasko.krakatau.KrakatauLibrary;
 import org.apache.maven.artifact.Artifact;
+import org.apache.maven.artifact.repository.ArtifactRepository;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -20,7 +21,7 @@ import java.util.Set;
  * to replace maven-compiler-plugin
  *
  * @goal compile
- * @phase compile
+ * @requiresDependencyResolution
  *
  * @author alexkasko
  * Date: 10/1/13
@@ -47,6 +48,7 @@ public class KrakatauCompilerMojo extends AbstractMojo {
      * @readonly
      */
     private MavenProject project;
+    protected java.util.List<ArtifactRepository> remoteRepositories;
 
     /**
      * {@inheritDoc}
@@ -57,10 +59,7 @@ public class KrakatauCompilerMojo extends AbstractMojo {
         Set<Artifact> deps = project.getDependencyArtifacts();
         List<File> classpath = new ArrayList<File>(deps.size());
         for(Artifact ar : deps) {
-            File fi = ar.getFile();
-            if(null == fi) throw new MojoFailureException("Cannot resolve dependencies for compilation" +
-                    " classpath, use 'compile' phase (or later) for this goal for proper dependency resolve");
-            classpath.add(fi);
+            classpath.add(ar.getFile());
         }
         if(!outputDir.exists()) outputDir.mkdirs();
         lib.compile(Arrays.asList(sourceFileOrDirs), classpath, outputDir, new OutputStreamWriter(System.err));

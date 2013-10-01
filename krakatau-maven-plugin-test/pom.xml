@@ -3,7 +3,6 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-
     <parent>
         <groupId>com.alexkasko.krakatau</groupId>
         <artifactId>krakatau-java</artifactId>
@@ -11,6 +10,34 @@
     </parent>
     <artifactId>krakatau-maven-plugin-test</artifactId>
     <name>Krakatau Java Assembler Maven Plugin Test Module</name>
+
+    <description>
+        Test module for krakatau-maven-plugin.
+    </description>
+    <url>https://github.com/alexkasko/krakatau-java</url>
+    <licenses>
+        <license>
+            <name>GNU Pubic License 3.0</name>
+            <url>http://opensource.org/licenses/gpl-3.0.html</url>
+        </license>
+    </licenses>
+    <scm>
+        <url>https://github.com/alexkasko/krakatau-java</url>
+        <connection>scm:git:https://github.com/alexkasko/krakatau-java.git</connection>
+        <developerConnection>scm:git:https://github.com/alexkasko/krakatau-java.git</developerConnection>
+        <tag>HEAD</tag>
+    </scm>
+    <developers>
+        <developer>
+            <name>Robert Grosse</name>
+            <url>https://github.com/Storyyeller</url>
+        </developer>
+        <developer>
+            <name>Alex Kasko</name>
+            <email>alex.kasko.mail@gmail.com</email>
+            <url>http://alexkasko.com</url>
+        </developer>
+    </developers>
 
     <dependencies>
         <dependency>
@@ -27,74 +54,40 @@
 
     <build>
         <plugins>
-            <!-- krakatau-maven-plugin usage example -->
+            <!-- krakatau-maven-plugin usage example, run one of the following: -->
+            <!-- mvn clean krakatau:assemble -->
+            <!-- mvn clean krakatau:disassemble -->
+            <!-- mvn clean krakatau:compile -->
+            <!-- mvn clean krakatau:decompile -->
             <plugin>
                 <groupId>${project.groupId}</groupId>
                 <artifactId>krakatau-maven-plugin</artifactId>
                 <version>${project.version}</version>
-                <executions>
-                    <!-- assemble example -->
-                    <execution>
-                        <id>test-assemble</id>
-                        <phase>generate-resources</phase>
-                        <goals>
-                            <goal>assemble</goal>
-                        </goals>
-                        <configuration>
-                            <asmFileOrDirs>
-                                <asmFileOrDir>${project.basedir}/src/test/resources/asm</asmFileOrDir>
-                            </asmFileOrDirs>
-                            <outputDir>${project.build.directory}/assembled</outputDir>
-                        </configuration>
-                    </execution>
-                    <execution>
-                        <!-- disassemble example -->
-                        <id>test-disassemble</id>
-                        <phase>generate-resources</phase>
-                        <goals>
-                            <goal>disassemble</goal>
-                        </goals>
-                        <configuration>
-                            <classFileOrDirs>
-                                <classFileOrDir>${project.basedir}/src/test/resources/classes</classFileOrDir>
-                            </classFileOrDirs>
-                            <outputDir>${project.build.directory}/disassembled</outputDir>
-                        </configuration>
-                    </execution>
-                    <execution>
-                        <!-- compile example -->
-                        <id>test-compile</id>
-                        <phase>compile</phase>
-                        <goals>
-                            <goal>compile</goal>
-                        </goals>
-                        <configuration>
-                            <sourceFileOrDirs>
-                                <sourceFileOrDir>${project.basedir}/src/test/resources/sources</sourceFileOrDir>
-                            </sourceFileOrDirs>
-                            <outputDir>${project.build.directory}/compiled</outputDir>
-                        </configuration>
-                    </execution>
-                    <execution>
-                        <!-- decompile example -->
-                        <id>test-decompile</id>
-                        <phase>compile</phase>
-                        <goals>
-                            <goal>decompile</goal>
-                        </goals>
-                        <configuration>
-                            <classNames>
-                                <className>com.alexkasko.netty.ftp.CrlfStringDecoder</className>
-                                <className>com.alexkasko.netty.ftp.DataReceiver</className>
-                                <className>com.alexkasko.netty.ftp.FtpServerHandler</className>
-                            </classNames>
-                            <classDirs>
-                                <classDir>${project.basedir}/src/test/resources/classes</classDir>
-                            </classDirs>
-                            <outputDir>${project.build.directory}/decompiled</outputDir>
-                        </configuration>
-                    </execution>
-                </executions>
+                <configuration>
+                    <!-- assemble settings -->
+                    <asmFileOrDirs>
+                        <asmFileOrDir>${project.basedir}/src/test/resources/asm</asmFileOrDir>
+                    </asmFileOrDirs>
+                    <!-- disassemble settings -->
+                    <classFileOrDirs>
+                        <classFileOrDir>${project.basedir}/src/test/resources/classes</classFileOrDir>
+                    </classFileOrDirs>
+                    <!-- compile settings -->
+                    <sourceFileOrDirs>
+                        <sourceFileOrDir>${project.basedir}/src/test/resources/sources</sourceFileOrDir>
+                    </sourceFileOrDirs>
+                    <!-- decompile settings -->
+                    <classNames>
+                        <className>com.alexkasko.netty.ftp.CrlfStringDecoder</className>
+                        <className>com.alexkasko.netty.ftp.DataReceiver</className>
+                        <className>com.alexkasko.netty.ftp.FtpServerHandler</className>
+                    </classNames>
+                    <classDirs>
+                        <classDir>${project.basedir}/src/test/resources/classes</classDir>
+                    </classDirs>
+                    <!-- common settings -->
+                    <outputDir>${project.build.directory}/krakatau</outputDir>
+                </configuration>
             </plugin>
         </plugins>
     </build>

@@ -8,7 +8,6 @@ import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.project.MavenProject;
 
 import java.io.File;
-import java.io.OutputStreamWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -18,7 +17,7 @@ import java.util.Set;
  * Decompile class files into Java sources using Krakatau python library
  *
  * @goal decompile
- * @phase compile
+ * @requiresDependencyResolution
  *
  * @author alexkasko
  * Date: 10/1/13
@@ -62,10 +61,7 @@ public class KrakatauDecompileMojo extends AbstractMojo {
         Set<Artifact> deps = project.getDependencyArtifacts();
         List<File> classpath = new ArrayList<File>(deps.size());
         for(Artifact ar : deps) {
-            File fi = ar.getFile();
-            if(null == fi) throw new MojoFailureException("Cannot resolve dependencies for compilation" +
-                    " classpath, use 'compile' phase for this goal for proper dependency resolve");
-            classpath.add(fi);
+            classpath.add(ar.getFile());
         }
         for(File fi : classDirs) {
             classpath.add(fi);

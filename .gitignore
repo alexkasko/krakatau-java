@@ -3,5 +3,7 @@
 /.idea
 /*.iml
 /dependency-reduced-pom.xml
+/parsetab.py
 /*/parsetab.py
+/cache.txt
 /*/cache.txt
