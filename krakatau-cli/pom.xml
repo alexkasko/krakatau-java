@@ -10,6 +10,7 @@
         <version>1.0-SNAPSHOT</version>
     </parent>
     <artifactId>krakatau-cli</artifactId>
+    <name>Krakatau Java Assembler Command Line Frontend</name>
 
     <properties>
         <project.main_class>com.alexkasko.krakatau.cli.Launcher</project.main_class>

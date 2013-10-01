@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.alexkasko.krakatau</groupId>
+        <artifactId>krakatau-java</artifactId>
+        <version>1.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>krakatau-maven-plugin-test</artifactId>
+    <name>Krakatau Java Assembler Maven Plugin Test Module</name>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.jboss.netty</groupId>
+            <artifactId>netty</artifactId>
+            <version>3.2.8.Final</version>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>1.6.1</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- krakatau-maven-plugin usage example -->
+            <plugin>
+                <groupId>${project.groupId}</groupId>
+                <artifactId>krakatau-maven-plugin</artifactId>
+                <version>${project.version}</version>
+                <executions>
+                    <!-- assemble example -->
+                    <execution>
+                        <id>test-assemble</id>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>assemble</goal>
+                        </goals>
+                        <configuration>
+                            <asmFileOrDirs>
+                                <asmFileOrDir>${project.basedir}/src/test/resources/asm</asmFileOrDir>
+                            </asmFileOrDirs>
+                            <outputDir>${project.build.directory}/assembled</outputDir>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <!-- disassemble example -->
+                        <id>test-disassemble</id>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>disassemble</goal>
+                        </goals>
+                        <configuration>
+                            <classFileOrDirs>
+                                <classFileOrDir>${project.basedir}/src/test/resources/classes</classFileOrDir>
+                            </classFileOrDirs>
+                            <outputDir>${project.build.directory}/disassembled</outputDir>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <!-- compile example -->
+                        <id>test-compile</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                        <configuration>
+                            <sourceFileOrDirs>
+                                <sourceFileOrDir>${project.basedir}/src/test/resources/sources</sourceFileOrDir>
+                            </sourceFileOrDirs>
+                            <outputDir>${project.build.directory}/compiled</outputDir>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <!-- decompile example -->
+                        <id>test-decompile</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>decompile</goal>
+                        </goals>
+                        <configuration>
+                            <classNames>
+                                <className>com.alexkasko.netty.ftp.CrlfStringDecoder</className>
+                                <className>com.alexkasko.netty.ftp.DataReceiver</className>
+                                <className>com.alexkasko.netty.ftp.FtpServerHandler</className>
+                            </classNames>
+                            <classDirs>
+                                <classDir>${project.basedir}/src/test/resources/classes</classDir>
+                            </classDirs>
+                            <outputDir>${project.build.directory}/decompiled</outputDir>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
