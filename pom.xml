@@ -8,7 +8,7 @@
     </parent>
     <groupId>com.alexkasko.krakatau</groupId>
     <artifactId>krakatau-java</artifactId>
-    <version>1.1-SNAPSHOT</version>
+    <version>1.0.1-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>Krakatau Java Assembler Tools</name>
 

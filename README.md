@@ -21,7 +21,7 @@ Library dependency (from maven central):
     <dependency>
         <groupId>com.alexkasko.krakatau</groupId>
         <artifactId>krakatau-lib</artifactId>
-        <version>1.0</version>
+        <version>1.0.1</version>
         <classifier>standalone</classifier>
         <exclusions>
             <exclusion>
@@ -86,6 +86,10 @@ This project is released under the [GNU Public License 3.0](http://opensource.or
 
 Changelog
 ---------
+
+**1.0.1** (2013-10-03)
+
+ * fix test dependencies resolving in compiler and decompiler maven
 
 **1.0** (2013-10-01)
 

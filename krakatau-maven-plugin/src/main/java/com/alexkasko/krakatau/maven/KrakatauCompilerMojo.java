@@ -21,7 +21,7 @@ import java.util.Set;
  * to replace maven-compiler-plugin
  *
  * @goal compile
- * @requiresDependencyResolution
+ * @requiresDependencyResolution test
  *
  * @author alexkasko
  * Date: 10/1/13

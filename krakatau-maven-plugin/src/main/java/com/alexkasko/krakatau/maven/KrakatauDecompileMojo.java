@@ -17,7 +17,7 @@ import java.util.Set;
  * Decompile class files into Java sources using Krakatau python library
  *
  * @goal decompile
- * @requiresDependencyResolution
+ * @requiresDependencyResolution test
  *
  * @author alexkasko
  * Date: 10/1/13
