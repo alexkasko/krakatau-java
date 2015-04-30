@@ -60,7 +60,7 @@ Command line tool
 Command line tool was created mainly for testing purposes, Jython slow startup make it impractical comparing to
 original Krakatau.
 
-Download [krakatau.jar-1.0](https://bitbucket.org/alexkasko/share/downloads/krakatau-1.0.jar) ([sha256sum](http://alexkasko.com/krakatau-java/checksums/krakatau-1.0.jar.sha256)).
+Download [krakatau.jar-1.1](https://bitbucket.org/alexkasko/share/downloads/krakatau-1.1.jar) ([sha256sum](http://alexkasko.com/krakatau-java/checksums/krakatau-1.1.jar.sha256)).
 
 Maven plugin
 ------------
