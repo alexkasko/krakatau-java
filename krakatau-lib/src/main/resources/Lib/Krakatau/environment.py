@@ -1,17 +1,14 @@
 import zipfile
 import os.path
 
-from Krakatau import binUnpacker
-from Krakatau import stdcache
-from Krakatau.classfile import ClassFile
-from Krakatau.error import ClassLoaderError
+from . import binUnpacker
+from .classfile import ClassFile
+from .error import ClassLoaderError
 
 class Environment(object):
     def __init__(self):
         self.classes = {}
         self.path = []
-        #Cache inheritance hierchies of standard lib classes so we don't have to load them to do subclass testing
-        self.cache = stdcache.Cache(self, 'cache.txt')
         self._open = {}
 
     def addToPath(self, path):
@@ -29,10 +26,20 @@ class Environment(object):
         return result
 
     def isSubclass(self, name1, name2):
-        return name1 == name2 or (name2 in self.cache.superClasses(name1))
-    def getFlags(self, name): return self.cache.flags(name)
-    def getSupers(self, name): return self.cache.superClasses(name)
-    def isCached(self, name): return self.cache.isCached(name)
+        return name1 == name2 or (name2 in self.getClass(name1).getSuperclassHierarchy())
+
+    def getData(self, name, suppressErrors):
+        try:
+            class_ = self.getClass(name, partial=True)
+            return class_.getSuperclassHierarchy(), class_.flags, class_.all_interfaces
+        except ClassLoaderError as e:
+            if not suppressErrors:
+                raise e
+            return [None]*3
+
+    def getSupers(self, name, suppressErrors=False): return self.getData(name, suppressErrors)[0]
+    def getFlags(self, name, suppressErrors=False): return self.getData(name, suppressErrors)[1]
+    def getInterfaces(self, name, suppressErrors=False): return self.getData(name, suppressErrors)[2]
 
     def _searchForFile(self, name):
         name += '.class'
@@ -45,7 +52,7 @@ class Environment(object):
                     with open(path, 'rb') as file_:
                         return file_.read()
                 except IOError:
-                    print 'failed to open', path
+                    print 'failed to open', path.encode('utf8')
             else: #zip archive
                 try:
                     return archive.read(name)
@@ -53,7 +60,7 @@ class Environment(object):
                     pass
 
     def _loadClass(self, name, subclasses):
-        print "Loading", name[:70]
+        print "Loading", name.encode('utf8')[:70]
         data = self._searchForFile(name)
 
         if data is None:

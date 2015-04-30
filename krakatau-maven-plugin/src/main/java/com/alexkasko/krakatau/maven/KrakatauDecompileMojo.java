@@ -68,5 +68,6 @@ public class KrakatauDecompileMojo extends AbstractMojo {
         }
         if(!outputDir.exists()) outputDir.mkdirs();
         lib.decompile(classpath, Arrays.asList(classNames), outputDir);
+        lib.cleanup();
     }
 }

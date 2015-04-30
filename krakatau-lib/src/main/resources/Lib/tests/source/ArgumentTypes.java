@@ -1,3 +1,4 @@
+// Originally created as a test for Krakatau (https://github.com/Storyyeller/Krakatau)
 import java.util.*;
 
 public class ArgumentTypes{
@@ -48,6 +49,10 @@ public class ArgumentTypes{
 		char c = 'C';
 		System.out.println(c);
 		System.out.println((int)c);
+
+		for(byte b=0; b<=2; ++b) {
+			foo(b); foo2(b);
+		}
 	}
 
 	public static byte[] main(byte[][] x){
@@ -56,4 +61,8 @@ public class ArgumentTypes{
 		}
 		return null;
 	}
+
+	public static void foo(byte b) {print(b);}
+	public static void foo2(byte b) {print(b != 0 ? 1 : 0);}
+	public static void print(int i) {System.out.println(i);}
 }

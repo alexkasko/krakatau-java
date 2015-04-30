@@ -1,15 +1,16 @@
 from .base import BaseOp
 from ..ssa_types import SSA_OBJECT
 
-from .. import excepttypes
+from .. import excepttypes, objtypes
 from ..constraints import ObjectConstraint, IntConstraint, DUMMY
 
 class New(BaseOp):
-    def __init__(self, parent, name, monad):
+    def __init__(self, parent, name, monad, inode_key):
         super(New, self).__init__(parent, [monad], makeException=True, makeMonad=True)
-        self.tt = name,0
-        self.rval = parent.makeVariable(SSA_OBJECT, origin=self)
         self.env = parent.env
+        self.tt = objtypes.TypeTT(name, 0)
+        self.rval = parent.makeVariable(SSA_OBJECT, origin=self)
+        self.rval.uninit_orig_num = inode_key
 
     def propagateConstraints(self, m):
         eout = ObjectConstraint.fromTops(self.env, [], (excepttypes.OOM,), nonnull=True)
@@ -21,9 +22,7 @@ class NewArray(BaseOp):
         super(NewArray, self).__init__(parent, [monad, param], makeException=True, makeMonad=True)
         self.baset = baset
         self.rval = parent.makeVariable(SSA_OBJECT, origin=self)
-
-        base, dim = baset
-        self.tt = base, dim+1
+        self.tt = objtypes.withDimInc(baset, 1)
         self.env = parent.env
 
     def propagateConstraints(self, m, i):
@@ -35,9 +34,8 @@ class NewArray(BaseOp):
         if i.min < 0:
             etypes += (excepttypes.NegArrSize,)
 
-        arrlen = IntConstraint(i.width, max(i.min, 0), i.max)
         eout = ObjectConstraint.fromTops(self.env, [], etypes, nonnull=True)
-        rout = ObjectConstraint.fromTops(self.env, [], [self.tt], nonnull=True, arrlen=arrlen)
+        rout = ObjectConstraint.fromTops(self.env, [], [self.tt], nonnull=True)
         return rout, eout, DUMMY
 
 class MultiNewArray(BaseOp):
@@ -59,7 +57,6 @@ class MultiNewArray(BaseOp):
                 etypes += (excepttypes.NegArrSize,)
                 break
 
-        arrlen = IntConstraint(i.width, max(dims[0].min, 0), dims[0].max)
         eout = ObjectConstraint.fromTops(self.env, [], etypes, nonnull=True)
-        rout = ObjectConstraint.fromTops(self.env, [], [self.tt], nonnull=True, arrlen=arrlen)
+        rout = ObjectConstraint.fromTops(self.env, [], [self.tt], nonnull=True)
         return rout, eout, DUMMY

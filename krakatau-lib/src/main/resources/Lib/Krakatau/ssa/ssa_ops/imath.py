@@ -1,5 +1,5 @@
 from .base import BaseOp
-from .. import ssa_types
+from .. import ssa_types, excepttypes
 from ..constraints import IntConstraint, ObjectConstraint
 from . import bitwise_util
 
@@ -126,7 +126,7 @@ class IUshr(BaseOp):
 
         parts = [x.min, x.max]
         if x.min <= -1 <= x.max:
-            parts.append(-1)        
+            parts.append(-1)
         if x.min <= 0 <= x.max:
             parts.append(0)
         parts = [p % M for p in parts]
@@ -135,7 +135,7 @@ class IUshr(BaseOp):
         return IntConstraint.range(x.width, m1>>shift, m2>>shift), None, None
 
 #############################################################################################
-exec_tts = ('java/lang/ArithmeticException', 0),
+exec_tts = excepttypes.Arithmetic,
 class IDiv(BaseOp):
     def __init__(self, parent, args):
         super(IDiv, self).__init__(parent, args, makeException=True)
@@ -165,7 +165,7 @@ class IDiv(BaseOp):
             if xv == intmin and yv == -1:
                 vals.add(intmin)
             elif xv*yv < 0: #Unlike Python, Java rounds to 0 so opposite sign case must be handled specially
-                vals.add(-(-xv//yv))                
+                vals.add(-(-xv//yv))
             else:
                 vals.add(xv//yv)
 
@@ -185,7 +185,7 @@ class IRem(BaseOp):
         #only do an exact result if both values are constants, and otherwise
         #just approximate the range as -(y-1) to (y-1) (or 0 to y-1 if it's positive)
         if x.min == x.max and y.min == y.max:
-            val = abs(x.min) % abs(y.min) 
+            val = abs(x.min) % abs(y.min)
             val = val if x.min >= 0 else -val
             return IntConstraint.range(x.width, val, val), None, None
 

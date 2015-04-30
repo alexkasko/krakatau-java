@@ -1,29 +1,26 @@
-import itertools, collections, copy
-ODict = collections.OrderedDict
+import itertools, collections, copy, functools
 
-from . import blockmaker,constraints, variablegraph, objtypes, subproc
+from . import blockmaker, constraints, variablegraph, objtypes, subproc
 from . import ssa_jumps, ssa_ops
 from ..verifier.descriptors import parseUnboundMethodDescriptor
 from .. import graph_util
 
-from .. import opnames
-from ..verifier import verifier_types
-from .ssa_types import SSA_OBJECT, SSA_MONAD
-from .ssa_types import slots_t, BasicBlock, verifierToSSAType
+from .ssa_types import SSA_OBJECT, BasicBlock, verifierToSSAType
 
 class SSA_Variable(object):
-    __slots__ = 'type','origin','name','const','decltype'
+    __slots__ = 'type','origin','name','const','decltype','uninit_orig_num'
 
     def __init__(self, type_, origin=None, name=""):
-        self.type = type_
+        self.type = type_       # SSA_INT, SSA_OBJECT, etc.
         self.origin = origin
         self.name = name
         self.const = None
         self.decltype = None #for objects, the inferred type from the verifier if any
+        self.uninit_orig_num = None #if uninitialized, the bytecode offset of the new instr
 
     #for debugging
     def __str__(self):
-        return self.name if self.name else super(Variable, self).__str__()
+        return self.name if self.name else super(SSA_Variable, self).__str__()
 
     def __repr__(self):
         name =  self.name if self.name else "@" + hex(id(self))
@@ -38,56 +35,32 @@ class SSA_Variable(object):
 
 #Handling of subprocedures is rather annoying. Each complete subproc has an associated
 #ProcInfo while jsrs and rets are represented by ProcCallOp and DummyRet respectively.
-#The callblock has the target and fallthrough as successors, while the fallthrough has
-#the callblock as predecessor, but not the retblock. Control flow paths where the proc
+#The jsrblock has the target and fallthrough as successors, while the fallthrough has
+#the jsrblock as predecessor, but not the retblock. Control flow paths where the proc
 #never returns are represented by ordinary jumps from blocks in the procedure to outside
 #Successful completion of the proc is represented by the fallthrough edge. The fallthrough
-#block gets its variables from callblock, including skip vars which don't depend on the
-#proc, and variables from callop.out which represent what would have been returned
+#block gets its variables from the jsrblock, including skip vars which don't depend on the
+#proc, and variables from jsr.output which represent what would have been returned from ret
 #Every proc has a reachable retblock. Jsrs with no associated ret are simply turned
-#into gotos.
+#into gotos during the initial basic block creation.
 
 class SSA_Graph(object):
-    entryKey, returnKey, rethrowKey = -1,-2,-3
+    entryKey = blockmaker.ENTRY_KEY
 
     def __init__(self, code):
-        self._interns = {} #used during initial graph creation to intern variable types
         self.code = code
         self.class_ = code.class_
         self.env = self.class_.env
 
-        method = code.method
-        inputTypes, returnTypes = parseUnboundMethodDescriptor(method.descriptor, self.class_.name, method.static)
-
-        #entry point
-        funcArgs = [self.makeVarFromVtype(vt, {}) for vt in inputTypes]
-        funcInMonad = self.makeVariable(SSA_MONAD)
-        entryslots = slots_t(monad=funcInMonad, locals=funcArgs, stack=[])
-        self.inputArgs = [funcInMonad] + funcArgs
-
-        entryb = BasicBlock(self.entryKey, lines=[], jump=ssa_jumps.Goto(self, 0))
-        entryb.successorStates = ODict([((0, False), entryslots)])
-        entryb.tempvars = [x for x in self.inputArgs if x is not None]
-        del entryb.sourceStates
-
-        #return
-        newmonad = self.makeVariable(SSA_MONAD)
-        newstack = [self.makeVarFromVtype(vt, {}) for vt in returnTypes[:1]] #make sure not to include dummy if returning double/long
-        returnb = BasicBlock(self.returnKey, lines=[], jump=ssa_jumps.Return(self, [newmonad] + newstack))
-        returnb.inslots = slots_t(monad=newmonad, locals=[], stack=newstack)
-        returnb.tempvars = []
-
-        #rethrow
-        newmonad, newstack = self.makeVariable(SSA_MONAD), [self.makeVariable(SSA_OBJECT)]
-        rethrowb = BasicBlock(self.rethrowKey, lines=[], jump=ssa_jumps.Rethrow(self, [newmonad] + newstack))
-        rethrowb.inslots = slots_t(monad=newmonad, locals=[], stack=newstack)
-        rethrowb.tempvars = []
-
-        self.entryBlock, self.returnBlock, self.rethrowBlock = entryb, returnb, rethrowb
+        self.inputArgs = None
+        self.entryBlock = None
         self.blocks = None
-        # self.procs = '' #used to store information on subprocedues (from the JSR instructions)
+        self.procs = None #used to store information on subprocedues (from the JSR instructions)
+
+        self.block_numberer = itertools.count(-4,-1)
 
     def condenseBlocks(self):
+        assert(not self.procs)
         old = self.blocks
         #Can't do a consistency check on entry as the graph may be in an inconsistent state at this point
         #Since the purpose of this function is to prune unreachable blocks from self.blocks
@@ -99,26 +72,10 @@ class SSA_Graph(object):
         assert(set(self.blocks) <= set(old))
         if len(self.blocks) < len(old):
             kept = set(self.blocks)
-
             for block in self.blocks:
                 for pair in block.predecessors[:]:
                     if pair[0] not in kept:
                         block.removePredPair(pair)
-
-            if self.returnBlock not in kept:
-                self.returnBlock = None
-            if self.rethrowBlock not in kept:
-                self.rethrowBlock = None
-
-            for proc in self.procs:
-                proc.callops = ODict((op,block) for op,block in proc.callops.items() if block not in kept)
-                if proc.callops:
-                    assert(proc.target in kept)
-                if proc.retblock not in kept:
-                    for block in proc.callops.values():
-                        block.jump = ssa_jumps.Goto(self, proc.target)
-                    proc.callops = None
-            self.procs = [proc for proc in self.procs if proc.callops]
 
     def removeUnusedVariables(self):
         assert(not self.procs)
@@ -148,11 +105,13 @@ class SSA_Graph(object):
             block.lines = filterOps(block.lines)
             block.filterVarConstraints(keepset)
 
-    def _getSources(self):
+    def _getSources(self): #TODO - remove
         sources = collections.defaultdict(set)
         for block in self.blocks:
             for child in block.getSuccessors():
                 sources[child].add(block)
+        for block in self.blocks:
+            assert(sources[block] == set(x for x,t in block.predecessors))
         return sources
 
     def mergeSingleSuccessorBlocks(self):
@@ -165,7 +124,7 @@ class SSA_Graph(object):
             if block in removed:
                 continue
             while 1:
-                successors = set(block.jump.getSuccessorPairs()) #Warning - make sure not to merge if we have a single successor with a double edge
+                successors = block.jump.getSuccessorPairs() #Warning - make sure not to merge if we have a single successor with a double edge
                 if len(successors) != 1:
                     break
                 #Even if an exception thrown has single target, don't merge because we need a way to actually access the thrown exception
@@ -178,30 +137,20 @@ class SSA_Graph(object):
                     break
 
                 #We've decided to merge the blocks, now do it
-                block.unaryConstraints.update(child.unaryConstraints)
+                uCs = block.unaryConstraints
+                uCs.update(child.unaryConstraints)
                 for phi in child.phis:
                     assert(len(phi.dict) == 1)
                     old, new = phi.rval, phi.get((block, jtype))
                     new = replace.get(new,new)
                     replace[old] = new
-
-                    uc1 = block.unaryConstraints[old]
-                    uc2 = block.unaryConstraints[new]
-                    block.unaryConstraints[new] = constraints.join(uc1, uc2)
-                    del block.unaryConstraints[old]
+                    uCs[new] = constraints.join(uCs[old], uCs[new])
+                    del uCs[old]
 
                 block.lines += child.lines
                 block.jump = child.jump
-
-                self.returnBlock = block if child == self.returnBlock else self.returnBlock
-                self.rethrowBlock = block if child == self.rethrowBlock else self.rethrowBlock
-                for proc in self.procs:
-                    proc.retblock = block if child == proc.retblock else proc.retblock
-                    #callop values and target obviously cannot be child
-                    proc.callops = ODict((op, (block if old==child else old)) for op, old in proc.callops.items())
-
                 #remember to update phis of blocks referring to old child!
-                for successor,t in block.jump.getSuccessorPairs():
+                for successor, t in block.jump.getSuccessorPairs():
                     successor.replacePredPair((child,t), (block,t))
                 removed.add(child)
         self.blocks = [b for b in self.blocks if b not in removed]
@@ -242,21 +191,24 @@ class SSA_Graph(object):
             for phi in block.phis:
                 assert(phi.rval is None or phi.rval in block.unaryConstraints)
                 for k,v in phi.dict.items():
-                    assert((v.origin is None or v in k[0].unaryConstraints))
+                    assert(v.name == "UNREACHABLE" or v in k[0].unaryConstraints)
+        keys = [block.key for block in self.blocks]
+        assert(len(set(keys)) == len(keys))
+        temp = [self.entryBlock]
         for proc in self.procs:
-            for callop in proc.callops:
-                assert(set(proc.retop.input) == set(callop.out))
+            temp += [proc.retblock]
+            temp += proc.jsrblocks
+        assert(len(set(temp)) == len(temp))
 
     def constraintPropagation(self):
         #Propagates unary constraints (range, type, etc.) pessimistically and optimistically
         #Assumes there are no subprocedues and this has not been called yet
         assert(not self.procs)
-
-        graph = variablegraph.makeGraph(self.env, self.blocks)
-        variablegraph.processGraph(graph)
+        varnodes, result_lookup = variablegraph.makeGraph(self.env, self.blocks)
+        variablegraph.processGraph(varnodes)
         for block in self.blocks:
             for var, oldUC in block.unaryConstraints.items():
-                newUC = graph[var].output[0]
+                newUC = result_lookup[var].output[0]
                 # var.name = makename(var)
                 if newUC is None:
                     # This variable is overconstrainted, meaning it must be unreachable
@@ -326,127 +278,180 @@ class SSA_Graph(object):
         self.condenseBlocks()
         self._conscheck()
 
+    def simplifyThrows(self):
+        # Try to turn throws into gotos where possible. This primarily helps with certain patterns of try-with-resources
+        # To do this, the exception must be known to be non null and there must be only one target that can catch it
+        # As a heuristic, we also restrict it to cases where every predecessor of the target can be converted
+        candidates = collections.defaultdict(list)
+        for block in self.blocks:
+            if not isinstance(block.jump, ssa_jumps.OnException) or len(block.jump.getSuccessorPairs()) != 1:
+                continue
+            if not block.lines or not isinstance(block.lines[-1], ssa_ops.Throw):
+                continue
+            if block.unaryConstraints[block.lines[-1].params[0]].null:
+                continue
+            candidates[block.jump.getExceptSuccessors()[0]].append(block)
+
+        for child in self.blocks:
+            if len(candidates[child]) < len(child.predecessors):
+                continue
+
+            for parent in candidates[child]:
+                throw_op = parent.lines[-1]
+                var1 = throw_op.params[0]
+                var2 = throw_op.outException
+                assert(parent.jump.params[0] == var2)
+
+                for phi in child.phis:
+                    phi.replaceVars({var2: var1})
+                child.replacePredPair((parent, True), (parent, False))
+
+                del parent.unaryConstraints[var2]
+                parent.lines.pop()
+                parent.jump = ssa_jumps.Goto(self, child)
+
     # Subprocedure stuff #####################################################
-    def _copyVar(self, var): return copy.copy(var)
+    def _newBlockFrom(self, block):
+        b = BasicBlock(next(self.block_numberer))
+        self.blocks.append(b)
+        return b
+
+    def _copyVar(self, var, vard=None):
+        v = copy.copy(var)
+        v.name = v.origin = None #TODO - generate new names?
+        if vard is not None:
+            vard[var] = v
+        return v
+
+    def _region(self, proc):
+        # Find the set of blocks 'in' a subprocedure, i.e. those reachable from the target that can reach the ret block
+        region = graph_util.topologicalSort([proc.retblock], lambda block:[] if block == proc.target else [b for b,t in block.predecessors])
+        temp = set(region)
+        assert(self.entryBlock not in temp and proc.target in temp and temp.isdisjoint(proc.jsrblocks))
+        return region
+
+    def _duplicateBlocks(self, region, excludedPreds):
+        # Duplicate a region of blocks. All inedges will be redirected to the new blocks
+        # except for those from excludedPreds
+        excludedPreds = excludedPreds | set(region)
+        outsideBlocks = [b for b in self.blocks if b not in excludedPreds]
+
+        blockd, vard = {}, {}
+        for oldb in region:
+            block = blockd[oldb] = self._newBlockFrom(oldb)
+            block.unaryConstraints = {self._copyVar(k, vard):v for k, v in oldb.unaryConstraints.items()}
+            block.phis = [ssa_ops.Phi(block, vard[oldphi.rval]) for oldphi in oldb.phis]
+
+            for op in oldb.lines:
+                new = copy.copy(op)
+                new.replaceVars(vard)
+                new.replaceOutVars(vard)
+                assert(new.getOutputs().count(None) == op.getOutputs().count(None))
+                for outv in new.getOutputs():
+                    if outv is not None:
+                        assert(outv.origin is None)
+                        outv.origin = new
+                block.lines.append(new)
+
+            assert(set(vard).issuperset(oldb.jump.params))
+            block.jump = oldb.jump.clone()
+            block.jump.replaceVars(vard)
+
+            #Fix up blocks outside the region that jump into the region.
+            for key in oldb.predecessors[:]:
+                pred = key[0]
+                if pred not in excludedPreds:
+                    for phi1, phi2 in zip(oldb.phis, block.phis):
+                        phi2.add(key, phi1.get(key))
+                        del phi1.dict[key]
+                    oldb.predecessors.remove(key)
+                    block.predecessors.append(key)
+
+        #fix up jump targets of newly created blocks
+        for oldb, block in blockd.items():
+            block.jump.replaceBlocks(blockd)
+            for suc, t in block.jump.getSuccessorPairs():
+                suc.predecessors.append((block, t))
+
+        #update the jump targets of predecessor blocks
+        for block in outsideBlocks:
+            block.jump.replaceBlocks(blockd)
+
+        for old, new in vard.items():
+            assert(type(old.origin) == type(new.origin))
+
+        #Fill in phi args in successors of new blocks
+        for oldb, block in blockd.items():
+            for oldc, t in oldb.jump.getSuccessorPairs():
+                child = blockd.get(oldc, oldc)
+                assert(len(child.phis) == len(oldc.phis))
+                for phi1, phi2 in zip(oldc.phis, child.phis):
+                    phi2.add((block, t), vard[phi1.get((oldb, t))])
+
+        self._conscheck()
+        return blockd
 
     def _splitSubProc(self, proc):
         #Splits a proc into two, with one callsite using the new proc instead
-        #this involved duplicating the body of the procedure
-        assert(len(proc.callops) > 1)
-        callop, callblock = proc.callops.items()[0]
-        retblock, retop = proc.retblock, proc.retop
-        target = proc.target
-        ftblock = callop.fallthrough
+        #this involves duplicating the body of the procedure
+        #the new proc is appended to the list of procs so it can work properly
+        #with the stack processing in inlineSubprocs
+        assert(len(proc.jsrblocks) > 1)
+        target, retblock = proc.target, proc.retblock
+        region = self._region(proc)
 
-        getpreds = lambda block:(zip(*block.predecessors)[0] if block.predecessors and block != target else [])
-        region = graph_util.topologicalSort([retblock], getpreds)
-        assert(target in region and retblock in region and callblock not in region and ftblock not in region)
-        assert(self.entryBlock not in region)
+        split_jsrs = [proc.jsrblocks.pop()]
+        blockd = self._duplicateBlocks(region, set(proc.jsrblocks))
 
-        varmap = {}
-        blockmap = {}
-        for block in region:
-            newb = BasicBlock(key=(block.key, callblock.key), lines=[], jump=None)
-            del newb.sourceStates
-            blockmap[block] = newb
-            self.blocks.append(newb)
-
-            for var, UC in block.unaryConstraints.items():
-                varmap[var] = self._copyVar(var)
-            newb.unaryConstraints = ODict((varmap[var],UC) for var,UC in block.unaryConstraints.items())
-
-        #fix up successors for edges that jump outside the subproc (absconding)
-        for block in region:
-            newb = blockmap[block]
-            for block2, t in block.jump.getSuccessorPairs():
-                if block2 not in blockmap:
-                    block2.predecessors.append((newb, t))
-                    for phi in block2.phis:
-                        phi.dict[newb, t] = varmap[phi.dict[block, t]]
-
-        for block in region:
-            newb = blockmap[block]
-            newb.predecessors = [(blockmap.get(sb,sb),t) for sb,t in block.predecessors]
-
-            newb.phis = []
-            for phi in block.phis:
-                vals = {(blockmap.get(sb,sb),t):varmap.get(var,var) for (sb,t),var in phi.dict.items()}
-                rval = varmap[phi.rval] #origin fixed later
-                rval.origin = new = ssa_ops.Phi(self, newb, vals, rval)
-                newb.phis.append(new)
-
-            for op in block.lines:
-                new = copy.copy(op)
-                new.replaceVars(varmap)
-                new.replaceOutVars(varmap)
-                newb.lines.append(new)
-                for outVar in new.getOutputs():
-                    if outVar is not None:
-                        outVar.origin = new
-
-            assert(not isinstance(block.jump, subproc.ProcCallOp))
-            new = block.jump.clone()
-            new.replaceVars(varmap)
-            #jump.replaceBlocks expects to have a valid mapping for every existing block
-            #quick hack, create temp dictionary
-            tempmap = {b:b for b in new.getSuccessors()}
-            tempmap.update(blockmap)
-            new.replaceBlocks(tempmap)
-            newb.jump = new
-
-            for var in newb.unaryConstraints:
-                assert(var.origin is None or var.origin in (newb.lines + newb.phis))
-
-        #Fix up callop and ft
-        target.removePredPair((callblock, False))
-        for pair in target.predecessors:
-            blockmap[target].removePredPair(pair)
-
-        blockmap[retblock].target = callop.target = blockmap[target]
-        del proc.callops[callop]
-        proc2 = subproc.ProcInfo(blockmap[retblock], callop.target)
-        proc2.callops[callop] = callblock
-        self.procs.append(proc2)
-        assert(len(self.blocks) == len({b.key for b in self.blocks}))
+        newproc = subproc.ProcInfo(blockd[proc.retblock], blockd[proc.target])
+        newproc.jsrblocks = split_jsrs
+        #Sanity check
+        for temp in self.procs + [newproc]:
+            for jsr in temp.jsrblocks:
+                assert(jsr.jump.target == temp.target)
+        return newproc
 
     def _inlineSubProc(self, proc):
-        #Inline a proc with single callsite in place
-        assert(len(proc.callops) == 1)
-        callop, callblock = proc.callops.items()[0]
-        retblock, retop = proc.retblock, proc.retop
-        target = proc.target
-        ftblock = callop.fallthrough
+        #Inline a proc with single callsite inplace
+        assert(len(proc.jsrblocks) == 1)
+        target, retblock = proc.target, proc.retblock
+        region = self._region(proc)
 
-        getpreds = lambda block:(zip(*block.predecessors)[0] if block.predecessors and block != target else [])
-        region = graph_util.topologicalSort([retblock], getpreds)
-        assert(target in region and retblock in region and callblock not in region and ftblock not in region)
-        assert(self.entryBlock not in region)
+        jsrblock = proc.jsrblocks[0]
+        jsrop = jsrblock.jump
+        ftblock = jsrop.fallthrough
 
         #first we find any vars that bypass the proc since we have to pass them through the new blocks
-        skipvars = [phi.get((callblock,False)) for phi in callop.fallthrough.phis]
-        skipvars = [var for var in skipvars if var.origin is not callop]
+        skipvars = [phi.get((jsrblock, False)) for phi in ftblock.phis]
+        skipvars = [var for var in skipvars if var.origin is not jsrop]
+        #will need to change if we ever add a pass to create new skipvars
+        assert(set(skipvars) <= jsrop.debug_skipvars)
 
         svarcopy = {(var, block):self._copyVar(var) for var, block in itertools.product(skipvars, region)}
         for var, block in itertools.product(skipvars, region):
-            if block == target:
-                assert(block.predecessors == [(callblock, False)])
-                vals = {k:var for k in block.predecessors}
-            else:
-                vals = {k:svarcopy[var, k[0]] for k in block.predecessors}
+            # Create a new phi for the passed through var for this block
             rval = svarcopy[var, block]
-            rval.origin = phi = ssa_ops.Phi(self, block, vals, rval)
+            phi = ssa_ops.Phi(block, rval)
             block.phis.append(phi)
-            block.unaryConstraints[rval] = callblock.unaryConstraints[var]
+            block.unaryConstraints[rval] = jsrblock.unaryConstraints[var]
 
-        outreplace = {v:svarcopy[v, retblock] for v in skipvars}
-        for k, v in callop.out.items():
-            outreplace[v] = retop.input[k]
-            del callblock.unaryConstraints[v]
+            if block == target:
+                assert(block.predecessors == [(jsrblock, False)])
+                phi.add(block.predecessors[0], var)
+            else:
+                for key in block.predecessors:
+                    phi.add(key, svarcopy[var, key[0]])
 
-        callblock.jump = ssa_jumps.Goto(self, target)
+        outreplace = {jv:rv for jv, rv in zip(jsrblock.jump.output, retblock.jump.input) if jv is not None}
+        for var in outreplace: #don't need jsrop's out vars anymore
+            del jsrblock.unaryConstraints[var]
+
+        for var in skipvars:
+            outreplace[var] = svarcopy[var, retblock]
+        jsrblock.jump = ssa_jumps.Goto(self, target)
         retblock.jump = ssa_jumps.Goto(self, ftblock)
 
-        ftblock.replacePredPair((callblock, False), (retblock, False))
+        ftblock.replacePredPair((jsrblock, False), (retblock, False))
         for phi in ftblock.phis:
             phi.replaceVars(outreplace)
 
@@ -456,64 +461,144 @@ class SSA_Graph(object):
             return
 
         #establish DAG of subproc callstacks if we're doing nontrivial inlining, since we can only inline leaf procs
-        sources = self._getSources()
-        regions = {}
-        for proc in self.procs:
-            region = graph_util.topologicalSort([proc.retblock], lambda block:([] if block == proc.target else sources[block]))
-            assert(self.entryBlock not in region)
-            regions[proc] = frozenset(region)
-
+        regions = {proc:frozenset(self._region(proc)) for proc in self.procs}
         parents = {proc:[] for proc in self.procs}
         for x,y in itertools.product(self.procs, repeat=2):
-            # if regions[x] < regions[y]:
-            if not regions[y].isdisjoint(x.callops.values()):
+            if not regions[y].isdisjoint(x.jsrblocks):
                 parents[x].append(y)
-        print 'parents', parents
 
         self.procs = graph_util.topologicalSort(self.procs, parents.get)
         if any(parents.values()):
-            print 'Warning, nesting subprocedures detected! This method may take forever to decompile.'
+            print 'Warning, nesting subprocedures detected! This method may take a long time to decompile.'
 
         #now inline the procs
         while self.procs:
             proc = self.procs.pop()
-            while len(proc.callops) > 1:
+            while len(proc.jsrblocks) > 1:
                 print 'splitting', proc
-                self._splitSubProc(proc)
+                #push new subproc onto stack
+                self.procs.append(self._splitSubProc(proc))
+                self._conscheck()
+            # When a subprocedure has only one call point, it can just be inlined instead of splitted
             print 'inlining', proc
             self._inlineSubProc(proc)
-        self._conscheck()
+            self._conscheck()
     ##########################################################################
+    def splitDualInedges(self):
+        # Split any blocks that have both normal and exceptional in edges
+        assert(not self.procs)
+        for block in self.blocks[:]:
+            if block is self.entryBlock:
+                continue
+            types = set(zip(*block.predecessors)[1])
+            if len(types) <= 1:
+                continue
+            assert(not isinstance(block.jump, (ssa_jumps.Return, ssa_jumps.Rethrow)))
 
-    #assign variable names for debugging
+            new = self._newBlockFrom(block)
+            print 'Splitting', block, '->', new
+            # first fix up CFG edges
+            badpreds = [t for t in block.predecessors if t[1]]
+            new.predecessors = badpreds
+            for t in badpreds:
+                block.predecessors.remove(t)
+
+            for pred, _ in badpreds:
+                assert(isinstance(pred.jump, ssa_jumps.OnException))
+                pred.jump.replaceExceptTarget(block, new)
+
+            new.jump = ssa_jumps.Goto(self, block)
+            block.predecessors.append((new, False))
+
+            # fix up variables
+            new.phis = []
+            new.unaryConstraints = {}
+            for phi in block.phis:
+                newrval = self._copyVar(phi.rval)
+                new.unaryConstraints[newrval] = block.unaryConstraints[phi.rval]
+                newphi = ssa_ops.Phi(new, newrval)
+                new.phis.append(newphi)
+
+                for t in badpreds:
+                    arg = phi.get(t)
+                    phi.delete(t)
+                    newphi.add(t, arg)
+                phi.add((new, False), newrval)
+        self._conscheck()
+
+    def fixLoops(self):
+        assert(not self.procs)
+        todo = self.blocks[:]
+        while todo:
+            newtodo = []
+            temp = set(todo)
+            sccs = graph_util.tarjanSCC(todo, lambda block:[x for x,t in block.predecessors if x in temp])
+
+            for scc in sccs:
+                if len(scc) <= 1:
+                    continue
+
+                scc_pair_set = {(x, False) for x in scc} | {(x, True) for x in scc}
+                entries = [n for n in scc if not scc_pair_set.issuperset(n.predecessors)]
+
+                if len(entries) <= 1:
+                    head = entries[0]
+                else:
+                    #if more than one entry point into the loop, we have to choose one as the head and duplicate the rest
+                    print 'Warning, multiple entry point loop detected. Generated code may be extremely large',
+                    print '({} entry points, {} blocks)'.format(len(entries), len(scc))
+                    def loopSuccessors(head, block):
+                        if block == head:
+                            return []
+                        return [x for x in block.jump.getSuccessors() if (x, False) in scc_pair_set]
+
+                    reaches = [(n, graph_util.topologicalSort(entries, functools.partial(loopSuccessors, n))) for n in scc]
+                    for head, reachable in reaches:
+                        reachable.remove(head)
+
+                    head, reachable = min(reaches, key=lambda t:(len(t[1]), -len(t[0].predecessors)))
+                    assert(head not in reachable)
+                    print 'Duplicating {} nodes'.format(len(reachable))
+                    blockd = self._duplicateBlocks(reachable, set(scc) - set(reachable))
+                    newtodo += map(blockd.get, reachable)
+                newtodo.extend(scc)
+                newtodo.remove(head)
+            todo = newtodo
+        self._conscheck()
+
+    # Functions called by children ###########################################
+    # assign variable names for debugging
     varnum = collections.defaultdict(itertools.count)
     def makeVariable(self, *args, **kwargs):
         var = SSA_Variable(*args, **kwargs)
-        pref = args[0][0][0]
+        # pref = args[0][0][0].replace('o','a')
         # var.name = pref + str(next(self.varnum[pref]))
         return var
 
+    def setObjVarData(self, var, vtype, initMap):
+        vtype2 = initMap.get(vtype, vtype)
+
+        # Intern the variable object types to save a little memory
+        # in the case of excessively long methods with large numbers
+        # of identical variables, such as sun/util/resources/TimeZoneNames_*
+        # TODO: probably not necessary any more due to other optimizations
+        tt = objtypes.verifierToSynthetic(vtype2)
+        assert(var.decltype is None or var.decltype == tt)
+        var.decltype = tt
+        #if uninitialized, record the offset of originating new instruction for later
+        if vtype.tag == '.new':
+            assert(var.uninit_orig_num is None or var.uninit_orig_num == vtype.extra)
+            var.uninit_orig_num = vtype.extra
+
     def makeVarFromVtype(self, vtype, initMap):
-        vtype = initMap.get(vtype, vtype)
-        type_ = verifierToSSAType(vtype)
+        vtype2 = initMap.get(vtype, vtype)
+        type_ = verifierToSSAType(vtype2)
         if type_ is not None:
             var = self.makeVariable(type_)
             if type_ == SSA_OBJECT:
-                # Intern the variable object types to save a little memory
-                # in the case of excessively long methods with large numbers
-                # of identical variables, such as sun/util/resources/TimeZoneNames_*
-                tt = objtypes.verifierToSynthetic(vtype)
-                var.decltype = self._interned(tt)
+                self.setObjVarData(var, vtype, initMap)
             return var
         return None
-
-    def _interned(self, x):
-        try:
-            return self._interns[x]
-        except KeyError:
-            if len(self._interns) < 256: #arbitrary limit
-                self._interns[x] = x
-            return x
 
     def getConstPoolArgs(self, index):
         return self.class_.cpool.getArgs(index)
@@ -521,126 +606,26 @@ class SSA_Graph(object):
     def getConstPoolType(self, index):
         return self.class_.cpool.getType(index)
 
-    def rawExceptionHandlers(self):
-        rethrow_handler = (0, self.code.codelen, self.rethrowKey, 0)
-        return self.code.except_raw + [rethrow_handler]
-
-def makePhiFromODict(parent, block, outvar, d, getter):
-    pairs = {k:getter(v) for k,v in d.items()}
-    return ssa_ops.Phi(parent, block, pairs, outvar)
-
-def isTerminal(parent, block):
-    return block is parent.returnBlock or block is parent.rethrowBlock
-
 def ssaFromVerified(code, iNodes):
+    method = code.method
+    inputTypes, returnTypes = parseUnboundMethodDescriptor(method.descriptor, method.class_.name, method.static)
+
     parent = SSA_Graph(code)
+    data = blockmaker.BlockMaker(parent, iNodes, inputTypes, returnTypes, code.except_raw)
 
-    #create map of uninitialized -> initialized types so we can convert them
-    initMap = {}
-    for node in iNodes:
-        if node.op == opnames.NEW:
-            initMap[node.push_type] = node.target_type
-    initMap[verifier_types.T_UNINIT_THIS] = verifier_types.T_OBJECT(code.class_.name)
+    parent.blocks = blocks = data.blocks
+    parent.entryBlock = data.entryBlock
+    parent.inputArgs = data.inputArgs
+    assert(parent.entryBlock in blocks)
 
-    blocks = [blockmaker.fromInstruction(parent, iNode, initMap) for iNode in iNodes if iNode.visited]
-    blocks = [parent.entryBlock] + blocks + [parent.returnBlock, parent.rethrowBlock]
-    blockDict = {b.key:b for b in blocks}
-
-    #fixup proc info
-    jsrs = [block for block in blocks if isinstance(block.jump, subproc.ProcCallOp)]
-    procs = ODict((block.jump.target, subproc.ProcInfo(block)) for block in blocks if isinstance(block.jump, subproc.DummyRet))
-    for block in jsrs:
-        target = blockDict[block.jump.iNode.successors[0]]
-        callop = block.jump
-        retblock = blockDict[block.jump.iNode.returnedFrom]
-        retop = retblock.jump
-        assert(isinstance(callop, subproc.ProcCallOp))
-        assert(isinstance(retop, subproc.DummyRet))
-
-        #merge states from inodes to create out
-        jsrslots = block.successorStates[target.key, False]
-
-        retslots = retblock.successorStates[callop.iNode.next_instruction, False]
-        del retblock.successorStates[callop.iNode.next_instruction, False]
-
-        #Create new variables (will have origin set to callop in registerOuts)
-        #Even for skip vars, we temporarily create a variable coming from the ret
-        #But it won't be used, and will be later pruned anyway
-        newstack = map(parent._copyVar, retslots.stack)
-        newlocals = map(parent._copyVar, retslots.locals)
-        newmonad = parent._copyVar(retslots.monad)
-        newslots = slots_t(monad=newmonad, locals=newlocals, stack=newstack)
-        callop.registerOuts(newslots)
-        block.tempvars += callop.out.values()
-
-        #The successor state uses the merged locals so it gets skipvars
-        zipped = itertools.izip_longest(newlocals, jsrslots.locals, fillvalue=None)
-        mask = [mask for entry,mask in retop.iNode.masks if entry == target.key][0]
-        merged = [(x if i in mask else y) for i,(x,y) in enumerate(zipped)]
-        merged_slots = slots_t(monad=newmonad, locals=merged, stack=newstack)
-
-        block.successorStates[callop.iNode.next_instruction, False] = merged_slots
-
-        proc = procs[target.key]
-        proc.callops[callop] = block
-        assert(proc.target == target.key and proc.retblock == retblock and proc.retop == retop)
-        del callop.iNode
-    #Now delete iNodes and fix extra input variables
-    procs = procs.values()
-    for proc in procs:
-        del proc.retop.iNode
-        assert(not proc.retblock.successorStates)
-        proc.target = blockDict[proc.target]
-
-        ops = proc.callops
-        keys = set.intersection(*(set(op.input.keys()) for op in ops))
-        for op in ops:
-            op.input = ODict((k,v) for k,v in op.input.items() if k in keys)
-    parent.procs = procs
-
-    #Propagate successor info
+    #create subproc info
+    procd = {block.jump.target:subproc.ProcInfo(block, block.jump.target) for block in blocks if isinstance(block.jump, subproc.DummyRet)}
     for block in blocks:
-        if isTerminal(parent, block):
-            continue
+        if isinstance(block.jump, subproc.ProcCallOp):
+            procd[block.jump.target].jsrblocks.append(block)
+    parent.procs = sorted(procd.values(), key=lambda p:p.target.key)
 
-        assert(set(block.jump.getNormalSuccessors()) == set([k for (k,t),o in block.successorStates.items() if not t]))
-        assert(set(block.jump.getExceptSuccessors()) == set([k for (k,t),o in block.successorStates.items() if t]))
-
-        #replace the placeholder keys with actual blocks now
-        block.jump.replaceBlocks(blockDict)
-        for (key, exc),outstate in block.successorStates.items():
-            dest = blockDict[key]
-            assert(dest.sourceStates.get((block,exc), outstate) == outstate)
-            dest.sourceStates[block,exc] = outstate
-        del block.successorStates
-
-    #create phi functions for input variables
-    for block in blocks:
-        if block is parent.entryBlock:
-            block.phis = []
-            block.predecessors = []
-            continue
-        block.predecessors = block.sourceStates.keys()
-        ins = block.inslots
-
-        ins.monad.origin = makePhiFromODict(parent, block, ins.monad, block.sourceStates, (lambda i: i.monad))
-        for k, v in enumerate(ins.stack):
-            if v is not None:
-                v.origin = makePhiFromODict(parent, block, v, block.sourceStates, (lambda i: i.stack[k]))
-        for k, v in enumerate(ins.locals):
-            if v is not None:
-                v.origin = makePhiFromODict(parent, block, v, block.sourceStates, (lambda i: i.locals[k]))
-                assert(v.origin.rval is v)
-
-        del block.sourceStates, block.inslots
-        phivars = [ins.monad] + ins.stack + ins.locals
-        block.phis = [var.origin for var in phivars if var is not None]
-
-        for phi in block.phis:
-            types = [var.type for var in phi.params]
-            assert(not types or set(types) == set([phi.rval.type]))
-
-    #Important to intern constraints to save memory on aforementioned excessively long methods
+    # Intern constraints to save a bit of memory for long methods
     def makeConstraint(var, _cache={}):
         key = var.type, var.const, var.decltype
         try:
@@ -651,25 +636,24 @@ def ssaFromVerified(code, iNodes):
 
     #create unary constraints for each variable
     for block in blocks:
-        bvars = list(block.tempvars)
-        del block.tempvars
-        assert(None not in bvars)
+        bvars = []
+        if isinstance(block.jump, subproc.ProcCallOp):
+            bvars += block.jump.output
+        #entry block has no phis
+        if block is parent.entryBlock:
+            bvars += parent.inputArgs
 
+        bvars = [v for v in bvars if v is not None]
         bvars += [phi.rval for phi in block.phis]
         for op in block.lines:
             bvars += op.params
             bvars += [x for x in op.getOutputs() if x is not None]
         bvars += block.jump.params
 
-        for var in bvars:
-            block.unaryConstraints[var] = makeConstraint(var)
-
-    #Make sure that branch targets are distinct, since this is assumed everywhere
-    #Only necessary for if statements as the other jumps merge targets automatically
-    for block in blocks:
-        block.jump = block.jump.reduceSuccessors([])
-    parent.blocks = blocks
-
-    del parent._interns #no new variables should be created from vtypes after this point. Might as well free it
+        for suc, t in block.jump.getSuccessorPairs():
+            for phi in suc.phis:
+                bvars.append(phi.get((block, t)))
+        assert(None not in bvars)
+        block.unaryConstraints = {var:makeConstraint(var) for var in set(bvars)}
     parent._conscheck()
     return parent

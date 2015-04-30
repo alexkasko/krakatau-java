@@ -1,4 +1,4 @@
-import collections, itertools
+import itertools
 
 from .constraints import join, meet
 from .. import graph_util
@@ -10,11 +10,11 @@ class BaseNode(object):
         self.sources = []
         self.uses = []
         self.process = processfunc
-        self.iters = self.upIters = 0
+        self.iters = 0
         self.propagateInvalid = not isphi
         self.filterNone = filterNone
-        self.upInvalid = False
-        #self.output, self.upOutput to be filled in
+        self.output = None #to be filled in later
+        self.lastInput = []
 
         self.root = None #for debugging purposes, store the SSA object this node corresponds to
 
@@ -31,32 +31,21 @@ class BaseNode(object):
 
     def update(self, iterlimit):
         if not self.sources:
-            assert(self.output == self.upOutput)
             return False
 
         changed = False
         if self.iters < iterlimit:
-            new = self._propagate([node.output[key] for node,key in self.sources])
-            if new != self.output:
-                self.output = new
-                self.iters += 1
-                changed = True
-
-        if self.upIters < iterlimit:
-            self.upInvalid = False
-            new = self._propagate([node.upOutput[key] for node,key in self.sources])
-            if new != self.upOutput:
-                self.upOutput = new
-                #don't increase upiters if changed was possibly due to change in lower bound
-                self.upIters += 1 if not changed else 0
-                changed = True
-
-                for node in self.uses:
-                    node.upInvalid = True
+            old, self.lastInput = self.lastInput, [node.output[key] for node,key in self.sources]
+            if old != self.lastInput:
+                new = self._propagate(self.lastInput)
+                if new != self.output:
+                    self.output = new
+                    self.iters += 1
+                    changed = True
         return changed
 
 def registerUses(use, sources):
-    for node,index in sources:
+    for node, index in sources:
         node.uses.append(use)
 
 def getJumpNode(pair, source, var, getVarNode, jumplookup):
@@ -71,20 +60,20 @@ def getJumpNode(pair, source, var, getVarNode, jumplookup):
             registerUses(n, n.sources)
 
             n.output = tuple(t[0].output[0] for t in n.sources)
-            n.upOutput = (None,) * len(n.output)
             n.root = jump
 
             for i, param in enumerate(jump.params):
                 jumplookup[(source, pair, param)] = n, i
             return jumplookup[(source, pair, var)]
 
+    assert(getVarNode(var) is not None)
     return getVarNode(var), 0
 
 def makeGraph(env, blocks):
-    lookup = collections.OrderedDict()
+    lookup = {}
     jumplookup = {}
 
-    variables = itertools.chain.from_iterable(block.unaryConstraints.items() for block in blocks)
+    variables = list(itertools.chain.from_iterable(block.unaryConstraints.items() for block in blocks))
     phis = itertools.chain.from_iterable(block.phis for block in blocks)
     ops = itertools.chain.from_iterable(block.lines for block in blocks)
 
@@ -96,8 +85,8 @@ def makeGraph(env, blocks):
         n = BaseNode(varlamb, False)
         #sources and uses will be reassigned upon opnode creation
         n.output = (curUC,)
-        lookup[var] = n
         n.root = var
+        lookup[var] = n
 
     for phi in phis:
         n = BaseNode(philamb, True)
@@ -108,7 +97,6 @@ def makeGraph(env, blocks):
 
         outnode = lookup[phi.rval]
         n.output = (outnode.output[0],)
-        n.upOutput = (None,)
         outnode.sources = [(n,0)]
         n.uses.append(outnode)
         n.root = phi
@@ -131,13 +119,11 @@ def makeGraph(env, blocks):
                 n.uses.append(vnode)
                 vnode.sources = [(n,i)]
         n.output = tuple(output)
-        n.upOutput = (None,None,None) if n.sources else n.output
         n.root = op
         assert(len(output) == 3)
 
-    vnodes = lookup.values()
-    for node in vnodes:
-        node.upOutput = node.output if not node.sources else (None,)*len(node.output)
+    assert(len(variables) > 0)
+    vnodes = [lookup[t[0]] for t in variables]
 
     #sanity check
     for node in vnodes:
@@ -146,25 +132,18 @@ def makeGraph(env, blocks):
                 assert(node in source.uses)
         for use in node.uses:
             assert(node in zip(*use.sources)[0])
-    return lookup
+    return vnodes, lookup
 
-def processGraph(graph, iterlimit=5):
-    sccs = graph_util.tarjanSCC(graph.values(), lambda node:[t[0] for t in node.sources])
+def processGraph(varnodes, iterlimit=5):
+    sccs = graph_util.tarjanSCC(varnodes, lambda node:[t[0] for t in node.sources])
     #iterate over sccs in topological order to improve convergence
 
     for scc in sccs:
         worklist = list(scc)
+        scc_s = set(scc)
+
         while worklist:
             node = worklist.pop(0)
             changed = node.update(iterlimit)
             if changed:
-                worklist.extend(use for use in node.uses if use in scc and use not in worklist)
-
-        #check if optimistic upperbounds converged
-        converged = all((not node.upInvalid or node.output == node.upOutput) for node in scc)
-        if converged:
-            for node in scc:
-                node.output = node.upOutput
-        else:
-            for node in scc: #Have to fix upOutput as child sccs may use it
-                node.upOutput = node.output
+                worklist.extend(use for use in node.uses if use in scc_s and use not in worklist)

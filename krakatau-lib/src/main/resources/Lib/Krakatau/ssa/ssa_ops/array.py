@@ -1,8 +1,14 @@
 from .base import BaseOp
 from ..ssa_types import SSA_INT
 
-from .. import excepttypes
+from .. import excepttypes, objtypes
 from ..constraints import IntConstraint, FloatConstraint, ObjectConstraint, DUMMY
+
+def getElementTypes(env, tops):
+    types = [objtypes.withDimInc(tt, -1) for tt in tops]
+    supers = [tt for tt in types if objtypes.isBaseTClass(tt)]
+    exact = [tt for tt in types if not objtypes.isBaseTClass(tt)]
+    return ObjectConstraint.fromTops(env, supers, exact)
 
 class ArrLoad(BaseOp):
     def __init__(self, parent, args, ssatype, monad):
@@ -12,27 +18,18 @@ class ArrLoad(BaseOp):
         self.ssatype = ssatype
 
     def propagateConstraints(self, m, a, i):
-        etypes = ()
+        etypes = (excepttypes.ArrayOOB,)
         if a.null:
             etypes += (excepttypes.NullPtr,)
             if a.isConstNull():
-                return None, ObjectConstraint.fromTops(self.env, [], etypes, nonnull=True), None
-
-        if a.arrlen is None or (i.min >= a.arrlen.max) or i.max < 0:
-            etypes += (excepttypes.ArrayOOB,)
-            eout = ObjectConstraint.fromTops(self.env, [], etypes, nonnull=True)
-            return None, eout, None
-        elif (i.max >= a.arrlen.min) or i.min < 0:
-            etypes += (excepttypes.ArrayOOB,)
+                return None, ObjectConstraint.fromTops(self.env, [], [excepttypes.NullPtr], nonnull=True), None
 
         if self.ssatype[0] == 'int':
             rout = IntConstraint.bot(self.ssatype[1])
         elif self.ssatype[0] == 'float':
             rout = FloatConstraint.bot(self.ssatype[1])
         elif self.ssatype[0] == 'obj':
-            supers = [(base,dim-1) for base,dim in a.types.supers]
-            exact = [(base,dim-1) for base,dim in a.types.exact]
-            rout = ObjectConstraint.fromTops(a.types.env, supers, exact)
+            rout = getElementTypes(self.env, a.types.supers | a.types.exact)
 
         eout = ObjectConstraint.fromTops(self.env, [], etypes, nonnull=True)
         return rout, eout, None
@@ -43,22 +40,18 @@ class ArrStore(BaseOp):
         self.env = parent.env
 
     def propagateConstraints(self, m, a, i, x):
-        etypes = ()
+        etypes = (excepttypes.ArrayOOB,)
         if a.null:
             etypes += (excepttypes.NullPtr,)
             if a.isConstNull():
-                return None, ObjectConstraint.fromTops(self.env, [], etypes, nonnull=True), m
-
-        if a.arrlen is None or (i.min >= a.arrlen.max) or i.max < 0:
-            etypes += (excepttypes.ArrayOOB,)
-            eout = ObjectConstraint.fromTops(self.env, [], etypes, nonnull=True)
-            return None, eout, m
-        elif (i.max >= a.arrlen.min) or i.min < 0:
-            etypes += (excepttypes.ArrayOOB,)
+                return None, ObjectConstraint.fromTops(self.env, [], [excepttypes.NullPtr], nonnull=True), m
 
         if isinstance(x, ObjectConstraint):
-            exact = [(base,dim-1) for base,dim in a.types.exact]
-            allowed = ObjectConstraint.fromTops(a.types.env, exact, [])
+            # If the type of a is known exactly to be the single possibility T[]
+            # and x is assignable to T, we can assume there is no ArrayStore exception
+            # if a's type has multiple possibilities, then there can be an exception
+            known_type = a.types.exact if len(a.types.exact) == 1 else frozenset()
+            allowed = getElementTypes(self.env, known_type)
             if allowed.meet(x) != allowed:
                 etypes += (excepttypes.ArrayStore,)
 
@@ -77,7 +70,7 @@ class ArrLength(BaseOp):
         if x.null:
             etypes += (excepttypes.NullPtr,)
             if x.isConstNull():
-                return None, ObjectConstraint.fromTops(self.env, [], etypes, nonnull=True), None
+                return None, ObjectConstraint.fromTops(self.env, [], [excepttypes.NullPtr], nonnull=True), None
 
         excons = eout = ObjectConstraint.fromTops(self.env, [], etypes, nonnull=True)
-        return x.arrlen, excons, None
+        return IntConstraint.range(32, 0, (1<<31)-1), excons, None

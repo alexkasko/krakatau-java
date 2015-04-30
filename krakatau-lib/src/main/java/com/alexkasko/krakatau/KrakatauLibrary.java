@@ -1,5 +1,6 @@
 package com.alexkasko.krakatau;
 
+import org.apache.commons.io.output.NullOutputStream;
 import org.eclipse.jdt.internal.compiler.apt.util.EclipseFileManager;
 import org.eclipse.jdt.internal.compiler.tool.EclipseCompiler;
 import org.eclipse.jdt.internal.compiler.tool.EclipseFileObject;
@@ -34,6 +35,15 @@ public class KrakatauLibrary {
 //        Options.showJavaExceptions = true;
 //        Options.includeJavaStackInExceptions = true;
         this.python = new PythonInterpreter();
+    }
+
+    /**
+     * Calls cleanup on interpreter instance
+     */
+    public void cleanup() {
+        if (null != python) {
+            python.cleanup();
+        }
     }
 
     /**
@@ -129,8 +139,9 @@ public class KrakatauLibrary {
             python.exec("from Krakatau import script_util");
             for (File fi : asmFiles) {
                 python.exec("pairs = assemble.assembleClass('" + fi.getPath() + "', True, False)");
+                python.exec("out = script_util.makeWriter('" + outDir.getPath() + "', '.class')");
                 python.exec("for name, data in pairs:\n" +
-                        "    filename = script_util.writeFile('" + outDir.getPath() + "', name, '.class', data)\n" +
+                        "    filename = out.write(name, data)\n" +
                         "    print 'Class written to', filename");
             }
         } catch (Exception e) {

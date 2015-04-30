@@ -3,8 +3,9 @@ import time, random
 
 import Krakatau
 import Krakatau.ssa
+from Krakatau.error import ClassLoaderError
 from Krakatau.environment import Environment
-from Krakatau.java import javaclass
+from Krakatau.java import javaclass, visitor
 from Krakatau.verifier.inference_verifier import verifyBytecode
 from Krakatau import script_util
 
@@ -31,31 +32,28 @@ def _print(s):
     from Krakatau.ssa.printer import SSAPrinter
     return SSAPrinter(s).print_()
 
-def makeCallback(funcs):
-    def makeGraph(m):
-        v = verifyBytecode(m.code)
-        s = Krakatau.ssa.ssaFromVerified(m.code, v)
-        for func in funcs:
-            func(graph=s)
+def makeGraph(m):
+    v = verifyBytecode(m.code)
+    s = Krakatau.ssa.ssaFromVerified(m.code, v)
 
-        if s.procs:
-            # s.mergeSingleSuccessorBlocks()
-            # s.removeUnusedVariables()
-            s.inlineSubprocs()
+    if s.procs:
+        # s.mergeSingleSuccessorBlocks()
+        # s.removeUnusedVariables()
+        s.inlineSubprocs()
 
-        # print _stats(s)
-        s.condenseBlocks()
-        s.mergeSingleSuccessorBlocks()
-        s.removeUnusedVariables()
-        # print _stats(s)
-        s.constraintPropagation()
-        s.disconnectConstantVariables()
-        s.simplifyJumps()
-        s.mergeSingleSuccessorBlocks()
-        s.removeUnusedVariables()
-        # print _stats(s)
-        return s
-    return makeGraph
+    # print _stats(s)
+    s.condenseBlocks()
+    s.mergeSingleSuccessorBlocks()
+    s.removeUnusedVariables()
+    # print _stats(s)
+    s.constraintPropagation()
+    s.disconnectConstantVariables()
+    s.simplifyJumps()
+    s.simplifyThrows()
+    s.mergeSingleSuccessorBlocks()
+    s.removeUnusedVariables()
+    # print _stats(s)
+    return s
 
 def deleteUnusued(cls):
     #Delete attributes we aren't going to use
@@ -69,28 +67,39 @@ def deleteUnusued(cls):
     del cls.interfaces_raw, cls.cpool
     del cls.attributes
 
-def decompileClass(path=[], targets=None, outpath=None, plugins=[]):
-    if outpath is None:
-        outpath = os.getcwd()
+def decompileClass(path=[], targets=None, outpath=None, skip_errors=False, add_throws=False):
+    out = script_util.makeWriter(outpath, '.java')
 
     e = Environment()
     for part in path:
         e.addToPath(part)
 
-    makeGraph = makeCallback(plugins)
     start_time = time.time()
     # random.shuffle(targets)
-    with e: #keep jars open
+    with e, out:
+        printer = visitor.DefaultVisitor()
         for i,target in enumerate(targets):
             print 'processing target {}, {} remaining'.format(target, len(targets)-i)
-            c = e.getClass(target)
-            source = javaclass.generateAST(c, makeGraph).print_()
+
+            try:
+                c = e.getClass(target)
+                source = printer.visit(javaclass.generateAST(c, makeGraph, skip_errors, add_throws=add_throws))
+            except Exception as err:
+                if not skip_errors:
+                    raise
+                if isinstance(err, ClassLoaderError):
+                    print 'Failed to decompile {} due to missing or invalid class {}'.format(target.encode('utf8'), err.data.encode('utf8'))
+                else:
+                    import traceback
+                    print traceback.format_exc()
+                continue
+
             #The single class decompiler doesn't add package declaration currently so we add it here
             if '/' in target:
                 package = 'package {};\n\n'.format(target.replace('/','.').rpartition('.')[0])
                 source = package + source
 
-            filename = script_util.writeFile(outpath, c.name, '.java', source)
+            filename = out.write(c.name, source)
             print 'Class written to', filename
             print time.time() - start_time, ' seconds elapsed'
             deleteUnusued(c)
@@ -100,19 +109,13 @@ if __name__== "__main__":
 
     import argparse
     parser = argparse.ArgumentParser(description='Krakatau decompiler and bytecode analysis tool')
-    parser.add_argument('-plugin',action='append',help='Plugins to use')
     parser.add_argument('-path',action='append',help='Semicolon seperated paths or jars to search when loading classes')
     parser.add_argument('-out',help='Path to generate source files in')
     parser.add_argument('-nauto', action='store_true', help="Don't attempt to automatically locate the Java standard library. If enabled, you must specify the path explicitly.")
     parser.add_argument('-r', action='store_true', help="Process all files in the directory target and subdirectories")
+    parser.add_argument('-skip', action='store_true', help="Upon errors, skip class or method and continue decompiling")
     parser.add_argument('target',help='Name of class or jar file to decompile')
     args = parser.parse_args()
-
-    plugins = []
-    if args.plugin is not None:
-        for name in args.plugin:
-            mod = __import__('Krakatau.plugins.user'+name, globals(), locals(), ['create'], -1)
-            plugins.append(mod.create())
 
     path = []
     if not args.nauto:
@@ -133,4 +136,4 @@ if __name__== "__main__":
 
     targets = script_util.findFiles(args.target, args.r, '.class')
     targets = map(script_util.normalizeClassname, targets)
-    decompileClass(path, targets, args.out, plugins)
+    decompileClass(path, targets, args.out, args.skip)

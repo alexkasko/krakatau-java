@@ -1,17 +1,17 @@
 from .base import BaseJump
 from .goto import Goto
+from .. import objtypes
 from ..exceptionset import  CatchSetManager, ExceptionSet
 from ..constraints import ObjectConstraint
 
 class OnException(BaseJump):
-    def __init__(self, parent, key, line, rawExceptionHandlers, fallthrough=None):
+    def __init__(self, parent, key, line, exceptionhandlers, fallthrough=None):
         super(OnException, self).__init__(parent, [line.outException])
         self.default = fallthrough
 
         chpairs = []
-        for (start, end, handler, index) in rawExceptionHandlers:
+        for (start, end, handler, catchtype) in exceptionhandlers:
             if start <= key < end:
-                catchtype = parent.getConstPoolArgs(index)[0] if index else 'java/lang/Throwable'
                 chpairs.append((catchtype, handler))
         self.cs = CatchSetManager(parent.env, chpairs)
         self.cs.pruneKeys()
@@ -24,8 +24,8 @@ class OnException(BaseJump):
 
     def replaceBlocks(self, blockDict):
         self.cs.replaceKeys(blockDict)
-        if self.default is not None and self.default in blockDict:
-            self.default = blockDict[self.default]
+        if self.default is not None:
+            self.default = blockDict.get(self.default, self.default)
 
     def reduceSuccessors(self, pairsToRemove):
         for (child, t) in pairsToRemove:
@@ -34,7 +34,7 @@ class OnException(BaseJump):
                 del self.cs.sets[child]
             else:
                 self.replaceNormalTarget(child, None)
-                
+
         self.cs.pruneKeys()
         if not self.cs.sets:
             if not self.default:
@@ -48,7 +48,7 @@ class OnException(BaseJump):
     def getExceptSuccessors(self):
         return self.cs.sets.keys()
 
-    def clone(self): 
+    def clone(self):
         new = super(OnException, self).clone()
         new.cs = self.cs.copy()
         return new
@@ -58,7 +58,7 @@ class OnException(BaseJump):
         if x is None:
             mask = ExceptionSet.EMPTY
         else:
-            mask = ExceptionSet(x.types.env, [(name,()) for name,dim in x.types.supers | x.types.exact])
+            mask = ExceptionSet(x.types.env, [(objtypes.className(tt),()) for tt in x.types.supers | x.types.exact])
         self.cs.newMask(mask)
         return self.reduceSuccessors([])
 
@@ -67,9 +67,10 @@ class OnException(BaseJump):
             def propagateConstraints(x):
                 if x is None:
                     return None
-                t = x.types 
+                t = x.types
                 top_tts = t.supers | t.exact
-                tops = [tt[0] for tt in top_tts]
+                tops = [objtypes.className(tt) for tt in top_tts]
+                assert(None not in tops)
                 if 'java/lang/Object' in tops:
                     tops = 'java/lang/Throwable',
                 mask = ExceptionSet.fromTops(t.env, *tops)
@@ -79,12 +80,9 @@ class OnException(BaseJump):
                     return None,
                 else:
                     ntops = zip(*eset.pairs)[0]
-                    return ObjectConstraint.fromTops(t.env, [(base,0) for base in ntops], [], nonnull=True),
+                    return ObjectConstraint.fromTops(t.env, [objtypes.TypeTT(base,0) for base in ntops], [], nonnull=True),
             return propagateConstraints
         else:
             #In fallthrough case, no exception so always return invalid
             assert(block == self.default)
             return lambda arg:[None]
-
-
-            

@@ -41,5 +41,6 @@ public class KrakatauAssembleMojo extends AbstractMojo {
         KrakatauLibrary lib = new KrakatauLibrary();
         if(!outputDir.exists()) outputDir.mkdirs();
         lib.assemble(Arrays.asList(asmFileOrDirs), outputDir);
+        lib.cleanup();
     }
 }

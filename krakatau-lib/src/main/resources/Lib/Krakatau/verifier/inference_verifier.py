@@ -3,10 +3,11 @@ import itertools
 from .. import error as error_types
 from .. import opnames
 from .. import bytecode
-from Krakatau.verifier.verifier_types import *
-from Krakatau.verifier.descriptors import *
+from .verifier_types import T_ADDRESS, T_ARRAY, T_BYTE, T_CHAR, T_DOUBLE, T_DOUBLE2, T_FLOAT, T_INT, T_INVALID, T_LONG, T_LONG2, T_NULL, T_OBJECT, T_SHORT, T_UNINIT_OBJECT, T_UNINIT_THIS
+from .verifier_types import OBJECT_INFO, decrementDim, fullinfo_t, isAssignable, mergeTypes, objOrArray
+from .descriptors import parseFieldDescriptor, parseMethodDescriptor, parseUnboundMethodDescriptor
 
-#This verifier is intended to closely replicate the behavior of Hotspot's inference verifier
+#This verifier is intended to be bug compatible with Hotspot's inference verifier
 #http://hg.openjdk.java.net/jdk7/jdk7/jdk/file/tip/src/share/native/common/check_code.c
 
 stackCharPatterns = {opnames.NOP:'-',
@@ -17,7 +18,7 @@ stackCharPatterns = {opnames.NOP:'-',
                     opnames.ARRLOAD_OBJ:'[A]I-A', opnames.ARRSTORE_OBJ:'[A]IA-',
                     opnames.IINC:'-',
 
-                    #Stack manip handled elsewhere
+                    #Stack manipulation handled elsewhere
                     opnames.POP:'1-', opnames.POP2:'2+1-',
                     opnames.DUP:'1-11', opnames.DUPX1:'21-121', opnames.DUPX2:'3+21-1321',
                     opnames.DUP2:'2+1-2121', opnames.DUP2X1:'32+1-21321', opnames.DUP2X2:'4+32+1-214321',
@@ -91,7 +92,7 @@ def _loadFieldDesc(cpool, ind):
 
 def _loadMethodDesc(cpool, ind):
     try:
-        if cpool.getType(ind) not in ('Method','InterfaceMethod'):
+        if cpool.getType(ind) not in ('Method', 'InterfaceMethod'):
             return None
         target, name, desc = cpool.getArgs(ind)
     except (IndexError, KeyError) as e: #TODO: find a way to make sure we aren't catching unexpected exceptions
@@ -129,7 +130,7 @@ class InstructionNode(object):
     _flag_vals = {1<<0:'NO_RETURN', 1<<1:'NEED_CONSTRUCTOR',
         1<<2:'NOT_CONSTRUCTED'}
 
-    def __init__(self, code, offsetList, key):
+    def __init__(self, code, offsetToIndex, indexToOffset, key):
         self.key = key
         assert(self.key is not None) #if it is this will cause problems with origin tracking
 
@@ -142,7 +143,10 @@ class InstructionNode(object):
         self.op = self.instruction[0]
 
         self.visited, self.changed = False, False
-        self.offsetList = offsetList #store for usage calculating JSRs and the like
+        #store for usage calculating JSRs, finding successor instructions and the like
+        self.offsetToIndex = offsetToIndex
+        self.indexToOffset = indexToOffset
+
         self._verifyOpcodeOperands()
         self._precomputeValues()
 
@@ -151,11 +155,11 @@ class InstructionNode(object):
         # new, checkcast, newarray, anewarray, multinewarray, instanceof:
         #   op.fi -> push_type
         # new: op2.fi -> target_type
+        self.out_state = None #store out state for JSR/RET instructions for ssa_construction
 
     def _verifyOpcodeOperands(self):
-
         def isTargetLegal(addr):
-            return addr is not None and addr in self.offsetList
+            return addr is not None and addr in self.offsetToIndex
         def verifyCPType(ind, types):
             if ind < 0 or ind >= self.cpool.size():
                 self.error('Invalid constant pool index {}', ind)
@@ -272,8 +276,8 @@ class InstructionNode(object):
 
     def _precomputeValues(self):
         #local_tag, local_ind, parsed_desc, successors
-        off_i = self.offsetList.index(self.key)
-        self.next_instruction = self.offsetList[off_i+1] #None if end of code
+        off_i = self.offsetToIndex[self.key]
+        self.next_instruction = self.indexToOffset[off_i+1] #None if end of code
 
         #cache these, since they're not state dependent  and don't produce errors anyway
         self.before, self.after = getSpecificStackCode(self.code, self.instruction)
@@ -685,16 +689,16 @@ class InstructionNode(object):
     def _mergeSingleSuccessor(self, other, newstate, iNodes, isException):
         newstack, newlocals, newmasks, newflags = newstate
         if self.op in (opnames.RET, opnames.JSR):
-            # Note: In most cases, this will cause an error later
-            # as INVALID is not allowed on the stack after merging
-            # but if the stack is never merged afterwards, it's ok
+            #Note: In most cases, this will cause an error later as INVALID is not allowed on the stack after merging
+            #but if the stack is never fully merged afterwards, it's ok (see below comments)
             newstack = tuple((T_INVALID if x.tag == '.new' else x) for x in newstack)
             newlocals = tuple((T_INVALID if x.tag == '.new' else x) for x in newlocals)
+            self.out_state = newstack, newlocals #store for later convienence
 
         if self.op == opnames.RET and not isException:
             #Get the instruction before other
-            off_i = self.offsetList.index(other.key)
-            jsrnode = iNodes[self.offsetList[off_i-1]]
+            off_i = self.offsetToIndex[other.key]
+            jsrnode = iNodes[self.indexToOffset[off_i-1]]
 
             if jsrnode.returnedFrom is not None and jsrnode.returnedFrom != self.key:
                 jsrnode.error('Multiple returns to jsr')
@@ -724,9 +728,13 @@ class InstructionNode(object):
             oldstack = other.stack
             if len(oldstack) != len(newstack):
                 other.error('Inconsistent stack height {} != {}', len(oldstack), len(newstack))
-            if any(not isAssignable(self.env, new, old) for new,old in zip(newstack, oldstack)):
+            #As an optimization, Hotspot only does a full merge if the stack fails the isAssignable test
+            #it is important to replicate this because it can affect whether a class verifies or not
+            #because an existing INVALID on the stack passes isAssignable but throws an error when merged
+            #this can happpen if there is a previous new instruction followed by a jsr
+            if any(not isAssignable(self.env, new, old) for new, old in zip(newstack, oldstack)):
                 other.changed = True
-                other.stack = tuple(mergeTypes(self.env, new, old) for new,old in zip(newstack, oldstack))
+                other.stack = tuple(mergeTypes(self.env, new, old) for new, old in zip(newstack, oldstack))
                 if T_INVALID in other.stack:
                     other.error('Incompatible types in merged stack')
 
@@ -745,7 +753,7 @@ class InstructionNode(object):
 
             if okcount < len(other.locals):
                 merged = list(other.locals[:okcount])
-                merged += [mergeTypes(self.env, new, old) for new,old in zipped[okcount:]]
+                merged += [mergeTypes(self.env, new, old) for new, old in zipped[okcount:]]
                 while merged and merged[-1] == T_INVALID:
                     merged.pop()
                 other.locals = tuple(merged)
@@ -795,7 +803,7 @@ class InstructionNode(object):
             self.jsrTarget = called #store for later use in ssa creation
 
         #Merge into exception handlers first
-        for (start,end),(handler,execStack) in exceptions:
+        for (start, end), (handler, execStack) in exceptions:
             if start <= self.key < end:
                 if self.op != opnames.INVOKEINIT:
                     self._mergeSingleSuccessor(handler, (execStack, newlocals, newmasks, newflags), iNodes, True)
@@ -841,12 +849,12 @@ def verifyBytecode(code):
         startFlags |= InstructionNode.NOT_CONSTRUCTED
     assert(len(args) <= 255)
     args = tuple(args)
+    assert(len(args) <= code.locals)
 
-    maxstack, maxlocals = code.stack, code.locals
-    assert(len(args) <= maxlocals)
-
-    offsets = tuple(sorted(code.bytecode.keys())) + (None,) #sentinel at end as invalid index
-    iNodes = [InstructionNode(code, offsets, key) for key in offsets[:-1]]
+    offsets = sorted(code.bytecode.keys())
+    offset_rmap = {v:i for i,v in enumerate(offsets)}
+    offsets.append(None) # Sentinel for end of code
+    iNodes = [InstructionNode(code, offset_rmap, offsets, key) for key in offsets[:-1]]
     iNodeLookup = {n.key:n for n in iNodes}
 
     keys = frozenset(iNodeLookup)

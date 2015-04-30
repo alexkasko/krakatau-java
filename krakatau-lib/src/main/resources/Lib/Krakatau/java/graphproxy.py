@@ -106,7 +106,7 @@ def createGraphProxy(ssagraph):
             intypes[b.key].add(t)
 
         if n.bkey == ssagraph.entryKey:
-            assert(not entryNode and not invars)
+            assert(not entryNode and not invars) #shouldn't have more than one entryBlock and entryBlock shouldn't have phis
             entryNode = n
             invars = ssagraph.inputArgs #store them in the node so we don't have to keep track seperately
             invars = [x for x in invars if x is not None] #will have None placeholders for Long and Double arguments
@@ -114,6 +114,7 @@ def createGraphProxy(ssagraph):
 
     lookup = {}
     for n in nodes:
+        assert(len(intypes[n.bkey]) != 2) #should have been handled by graph.splitDualInedges()
         if len(intypes[n.bkey]) == 2: #both normal and exceptional inedges
             n2 = n.newIndirect()
             allnodes.append(n2)
@@ -124,7 +125,7 @@ def createGraphProxy(ssagraph):
             lookup[n.bkey, False] = n
         if True in intypes[n.bkey]:
             lookup[n2.bkey, True] = n2
-    assert(lookup and unique(lookup.values()))
+    assert(unique(lookup.values()))
 
     for n in nodes:
         if n.block is None:

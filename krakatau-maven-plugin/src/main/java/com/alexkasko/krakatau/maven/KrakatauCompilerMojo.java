@@ -69,5 +69,6 @@ public class KrakatauCompilerMojo extends AbstractMojo {
         }
         if(!outputDir.exists()) outputDir.mkdirs();
         lib.compile(Arrays.asList(sourceFileOrDirs), langLevel, classpath, outputDir, new OutputStreamWriter(System.err));
+        lib.cleanup();
     }
 }

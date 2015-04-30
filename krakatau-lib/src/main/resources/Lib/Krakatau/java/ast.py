@@ -1,14 +1,18 @@
-import itertools
+import itertools, math
 
 from ..ssa import objtypes
 from .stringescape import escapeString
-# from ..ssa.constraints import ValueType
+
+# Explicitly cast parameters to the desired type in order to avoid potential issues with overloaded methods
+ALWAYS_CAST_PARAMS = 1
 
 class VariableDeclarator(object):
     def __init__(self, typename, identifier): self.typename = typename; self.local = identifier
 
-    def print_(self):
-        return '{} {}'.format(self.typename.print_(), self.local.print_())
+    def print_(self, printer, print_):
+        return '{} {}'.format(print_(self.typename), print_(self.local))
+
+    def tree(self, printer, tree): return [tree(self.typename), tree(self.local)]
 
 #############################################################################################################################################
 
@@ -25,17 +29,20 @@ class ExpressionStatement(JavaStatement):
     def __init__(self, expr):
         self.expr = expr
 
-    def print_(self): return self.expr.print_() + ';'
+    def print_(self, printer, print_): return print_(self.expr) + ';'
+    def tree(self, printer, tree): return ['exprS', tree(self.expr)]
 
 class LocalDeclarationStatement(JavaStatement):
     def __init__(self, decl, expr=None):
         self.decl = decl
         self.expr = expr
 
-    def print_(self):
+    def print_(self, printer, print_):
         if self.expr is not None:
-            return '{} = {};'.format(self.decl.print_(), self.expr.print_())
-        return self.decl.print_() + ';'
+            return '{} = {};'.format(print_(self.decl), print_(self.expr))
+        return print_(self.decl) + ';'
+
+    def tree(self, printer, tree): return ['declS', tree(self.expr), tree(self.decl)]
 
     def addCastsAndParens(self, env):
         if self.expr is not None:
@@ -50,7 +57,8 @@ class ReturnStatement(JavaStatement):
         self.expr = expr
         self.tt = tt
 
-    def print_(self): return 'return {};'.format(self.expr.print_()) if self.expr is not None else 'return;'
+    def print_(self, printer, print_): return 'return {};'.format(print_(self.expr)) if self.expr is not None else 'return;'
+    def tree(self, printer, tree): return ['retS', tree(self.expr)]
 
     def addCastsAndParens(self, env):
         if self.expr is not None:
@@ -62,15 +70,19 @@ class ReturnStatement(JavaStatement):
 class ThrowStatement(JavaStatement):
     def __init__(self, expr):
         self.expr = expr
-    def print_(self): return 'throw {};'.format(self.expr.print_())
+    def print_(self, printer, print_): return 'throw {};'.format(print_(self.expr))
+    def tree(self, printer, tree): return ['throwS', tree(self.expr)]
 
 class JumpStatement(JavaStatement):
     def __init__(self, target, isFront):
-        keyword = 'continue' if isFront else 'break'
-        label = (' ' + target.getLabel()) if target is not None else ''
-        self.str = keyword + label + ';'
+        self.label = target.getLabel() if target is not None else None
+        self.keyword = 'continue' if isFront else 'break'
 
-    def print_(self): return self.str
+    def print_(self, printer, print_):
+        label = ' ' + self.label if self.label is not None else ''
+        return self.keyword + label + ';'
+
+    def tree(self, printer, tree): return ['jumpS', self.keyword, self.label]
 
 #Compound Statements
 sbcount = itertools.count()
@@ -109,10 +121,14 @@ class TryStatement(LazyLabelBase):
 
     def getScopes(self): return (self.tryb,) + zip(*self.pairs)[1]
 
-    def print_(self):
-        tryb = self.tryb.print_()
-        parts = ['catch ({}) {}'.format(x.print_(), y.print_()) for x,y in self.pairs]
-        return '{}try {} {}'.format(self.getLabelPrefix(), tryb, '\n'.join(parts))
+    def print_(self, printer, print_):
+        tryb = print_(self.tryb)
+        parts = ['catch({})\n{}'.format(print_(x), print_(y)) for x,y in self.pairs]
+        return '{}try\n{}\n{}'.format(self.getLabelPrefix(), tryb, '\n'.join(parts))
+
+    def tree(self, printer, tree):
+        parts = [map(tree, t) for t in self.pairs]
+        return ['tryS', self.label, tree(self.tryb), parts]
 
 class IfStatement(LazyLabelBase):
     def __init__(self, labelfunc, begink, endk, expr, scopes):
@@ -123,23 +139,25 @@ class IfStatement(LazyLabelBase):
 
     def getScopes(self): return self.scopes
 
-    def print_(self):
+    def print_(self, printer, print_):
         lbl = self.getLabelPrefix()
         parts = [self.expr] + list(self.scopes)
 
         if len(self.scopes) == 1:
-            parts = [x.print_() for x in parts]
-            return '{}if ({}) {}'.format(lbl, *parts)
+            parts = [print_(x) for x in parts]
+            return '{}if ({})\n{}'.format(lbl, *parts)
 
         # Special case handling for 'else if'
-        sep = ' ' #else seperator depends on if we have else if
+        sep = '\n' #else seperator depends on if we have else if
         fblock = self.scopes[1]
         if len(fblock.statements) == 1:
             stmt = fblock.statements[-1]
             if isinstance(stmt, IfStatement) and stmt.label is None:
                 sep, parts[-1] = ' ', stmt
-        parts = [x.print_() for x in parts]
-        return '{}if ({}) {} else{sep}{}'.format(lbl, *parts, sep=sep)
+        parts = [print_(x) for x in parts]
+        return '{}if ({})\n{}\nelse{sep}{}'.format(lbl, *parts, sep=sep)
+
+    def tree(self, printer, tree): return ['ifS', self.label, tree(self.expr), map(tree, self.scopes)]
 
 class SwitchStatement(LazyLabelBase):
     def __init__(self, labelfunc, begink, endk, expr, pairs):
@@ -150,15 +168,15 @@ class SwitchStatement(LazyLabelBase):
     def getScopes(self): return zip(*self.pairs)[1]
     def hasDefault(self): return None in zip(*self.pairs)[0]
 
-    def print_(self):
-        expr = self.expr.print_()
+    def print_(self, printer, print_):
+        expr = print_(self.expr)
 
         def printCase(keys):
             if keys is None:
                 return 'default: '
             return ''.join(map('case {}: '.format, sorted(keys)))
 
-        bodies = [(printCase(keys) + scope.print_()) for keys, scope in self.pairs]
+        bodies = [(printCase(keys) + print_(scope)) for keys, scope in self.pairs]
         if self.pairs[-1][0] is None and len(self.pairs[-1][1].statements) == 0:
             bodies.pop()
 
@@ -166,6 +184,12 @@ class SwitchStatement(LazyLabelBase):
         indented = ['    '+line for line in contents.splitlines()]
         lines = ['{'] + indented + ['}']
         return '{}switch({}){}'.format(self.getLabelPrefix(), expr, '\n'.join(lines))
+
+    def tree(self, printer, tree):
+        parts = []
+        for keys, scope in self.pairs:
+            parts.append([[None] if keys is None else sorted(keys), tree(scope)])
+        return ['switchS', self.label, tree(self.expr), parts]
 
 class WhileStatement(LazyLabelBase):
     def __init__(self, labelfunc, begink, endk, parts):
@@ -176,9 +200,11 @@ class WhileStatement(LazyLabelBase):
 
     def getScopes(self): return self.parts
 
-    def print_(self):
-        parts = self.expr.print_(), self.parts[0].print_()
-        return '{}while ({}) {}'.format(self.getLabelPrefix(), *parts)
+    def print_(self, printer, print_):
+        parts = print_(self.expr), print_(self.parts[0])
+        return '{}while({})\n{}'.format(self.getLabelPrefix(), *parts)
+
+    def tree(self, printer, tree): return ['whileS', self.label, tree(self.expr), tree(self.parts[0])]
 
 class StatementBlock(LazyLabelBase):
     def __init__(self, labelfunc, begink, endk, statements, jumpk, labelable=True):
@@ -192,11 +218,11 @@ class StatementBlock(LazyLabelBase):
 
     def getScopes(self): return self,
 
-    def print_(self):
+    def print_(self, printer, print_):
         assert(self.labelable or self.label is None)
-        contents = '\n'.join(x.print_() for x in self.statements)
+        contents = '\n'.join(print_(x) for x in self.statements)
         indented = ['    '+line for line in contents.splitlines()]
-        # indented[:0] = ['    //{}{}'.format(self,x) for x in (self.breakKey, self.continueKey, self.jumpKey)]
+        # indented[:0] = ['    //{} {}'.format(self,x) for x in (self.continueKey, self.breakKey, self.jumpKey)]
         lines = [self.getLabelPrefix() + '{'] + indented + ['}']
         return '\n'.join(lines)
 
@@ -208,34 +234,40 @@ class StatementBlock(LazyLabelBase):
         common = [x for x in zip(*blists) if len(set(x)) == 1]
         return common[-1][0]
 
+    def tree(self, printer, tree): return ['blockS', self.label, map(tree, self.statements)]
+
 #Temporary hack
 class StringStatement(JavaStatement):
     def __init__(self, s):
         self.s = s
-    def print_(self): return self.s
+    def print_(self, printer, print_): return self.s
+    def tree(self, printer, tree): return ['stringS', self.s]
 
 #############################################################################################################################################
-_assignable_sprims = '.byte','.short','.char'
-_assignable_lprims = '.int','.long','.float','.double'
+# Careful, order is important here!
+_assignable_sprims = objtypes.ByteTT, objtypes.ShortTT, objtypes.CharTT
+_assignable_lprims = objtypes.IntTT, objtypes.LongTT, objtypes.FloatTT, objtypes.DoubleTT
 
-def isObject(tt):
-    return tt == objtypes.NullTT or tt[1] > 0 or not tt[0][0].startswith('.')
+# Also used in boolize.py
+def isPrimativeAssignable(x, y): #x = fromt, y = to
+    assert(objtypes.dim(x) == objtypes.dim(y) == 0)
 
-def isPrimativeAssignable(fromt, to):
-    x, y = fromt[0], to[0]
     if x == y or (x in _assignable_sprims and y in _assignable_lprims):
         return True
     elif (x in _assignable_lprims and y in _assignable_lprims):
         return _assignable_lprims.index(x) <= _assignable_lprims.index(y)
     else:
-        return x == '.byte' and y == '.short'
+        return (x, y) == (objtypes.ByteTT, objtypes.ShortTT)
+
+def isReferenceType(tt):
+    return tt == objtypes.NullTT or objtypes.dim(tt) or (objtypes.className(tt) is not None)
 
 def isJavaAssignable(env, fromt, to):
     if fromt is None or to is None: #this should never happen, except during debugging
         return True
 
-    if isObject(to):
-        assert(isObject(fromt))
+    if isReferenceType(to):
+        assert(isReferenceType(fromt))
         #todo - make it check interfaces too
         return objtypes.isSubtype(env, fromt, to)
     else: #allowed if numeric conversion is widening
@@ -246,8 +278,16 @@ def makeCastExpr(newtt, expr, fixEnv=None):
     if newtt == expr.dtype:
         return expr
 
-    if isinstance(expr, Literal) and newtt in (objtypes.IntTT, objtypes.BoolTT):
-        return Literal(newtt, expr.val)
+    # if casting a literal with compatible type, just create a literal of the new type
+    if isinstance(expr, Literal):
+        allowed_conversions = [
+            (objtypes.FloatTT, objtypes.DoubleTT),
+            (objtypes.IntTT, objtypes.LongTT),
+            (objtypes.IntTT, objtypes.BoolTT),
+            (objtypes.BoolTT, objtypes.IntTT),
+        ]
+        if (expr.dtype, newtt) in allowed_conversions:
+            return Literal(newtt, expr.val)
 
     if newtt == objtypes.IntTT and expr.dtype == objtypes.BoolTT:
         return Ternary(expr, Literal.ONE, Literal.ZERO)
@@ -276,8 +316,10 @@ class JavaExpression(object):
     def postFlatIter(self):
         return itertools.chain([self], *[expr.postFlatIter() for expr in self.params])
 
-    def print_(self):
-        return self.fmt.format(*[expr.print_() for expr in self.params])
+    def print_(self, printer, print_):
+        return self.fmt.format(*[print_(expr) for expr in self.params])
+
+    def tree(self, printer, tree): return [self.__class__.__name__, map(tree, self.params)]
 
     def replaceSubExprs(self, rdict):
         if self in rdict:
@@ -303,7 +345,7 @@ class JavaExpression(object):
     def isLocalAssign(self): return isinstance(self, Assignment) and isinstance(self.params[0], Local)
 
     def __repr__(self):
-        return type(self).__name__.rpartition('.')[-1] + ' ' + self.print_()
+        return type(self).__name__.rpartition('.')[-1] + ' ' + self.print_(None, None)
     __str__ = __repr__
 
 class ArrayAccess(JavaExpression):
@@ -311,17 +353,14 @@ class ArrayAccess(JavaExpression):
         if params[0].dtype == objtypes.NullTT:
             #Unfortunately, Java doesn't really support array access on null constants
             #So we'll just cast it to Object[] as a hack
-            param = makeCastExpr(('java/lang/Object',1), params[0])
+            param = makeCastExpr(objtypes.withDimInc(objtypes.ObjectTT, 1), params[0])
             params = param, params[1]
 
         self.params = params
         self.fmt = '{}[{}]'
 
     @property
-    def dtype(self):
-        base, dim = self.params[0].dtype
-        assert(dim>0)
-        return base, dim-1
+    def dtype(self): return objtypes.withDimInc(self.params[0].dtype, -1)
 
     def addParens_sub(self):
         p0 = self.params[0]
@@ -330,11 +369,13 @@ class ArrayAccess(JavaExpression):
 
 class ArrayCreation(JavaExpression):
     def __init__(self, tt, *sizeargs):
-        base, dim = tt
-        self.params = (TypeName((base,0)),) + sizeargs
+        self.dim = objtypes.dim(tt)
+        self.params = (TypeName(objtypes.withNoDim(tt)),) + sizeargs
         self.dtype = tt
-        assert(dim >= len(sizeargs) > 0)
-        self.fmt = 'new {}' + '[{}]'*len(sizeargs) + '[]'*(dim-len(sizeargs))
+        assert(self.dim >= len(sizeargs) > 0)
+        self.fmt = 'new {}' + '[{}]'*len(sizeargs) + '[]'*(self.dim-len(sizeargs))
+
+    def tree(self, printer, tree): return [self.__class__.__name__, map(tree, self.params), self.dim]
 
 class Assignment(JavaExpression):
     precedence = 21
@@ -382,6 +423,8 @@ class BinaryInfix(JavaExpression):
             elif p.precedence == myprec and i > 0 and not associative:
                 self.params[i] = Parenthesis(p)
 
+    def tree(self, printer, tree): return [self.__class__.__name__, self.opstr, tree(self.params[0]), tree(self.params[1])]
+
 class Cast(JavaExpression):
     precedence = 5
     def __init__(self, *params):
@@ -393,7 +436,7 @@ class Cast(JavaExpression):
         tt, expr = self.dtype, self.params[1]
         # "Impossible" casts are a compile error in Java.
         # This can be fixed with an intermediate cast to Object
-        if isObject(tt):
+        if isReferenceType(tt):
             if not isJavaAssignable(env, tt, expr.dtype):
                 if not isJavaAssignable(env, expr.dtype, tt):
                     expr = makeCastExpr(objtypes.ObjectTT, expr)
@@ -411,22 +454,46 @@ class ClassInstanceCreation(JavaExpression):
         self.typename, self.tts, self.params = typename, tts, arguments
         self.dtype = typename.tt
 
-    def print_(self):
-        return 'new {}({})'.format(self.typename.print_(), ', '.join(x.print_() for x in self.params))
+    def print_(self, printer, print_):
+        return 'new {}({})'.format(print_(self.typename), ', '.join(print_(x) for x in self.params))
+
+    def tree(self, printer, tree):
+        return [self.__class__.__name__, map(tree, self.params), tree(self.typename)]
 
     def addCasts_sub(self, env):
         newparams = []
         for tt, expr in zip(self.tts, self.params):
-            if expr.dtype != tt:
+            if expr.dtype != tt and (ALWAYS_CAST_PARAMS or not isJavaAssignable(env, expr.dtype, tt)):
                 expr = makeCastExpr(tt, expr, fixEnv=env)
             newparams.append(expr)
         self.params = newparams
 
 class FieldAccess(JavaExpression):
-    def __init__(self, primary, name, dtype, printLeft=True):
+    def __init__(self, primary, name, dtype, op=None, printLeft=True):
         self.dtype = dtype
-        self.params, self.name = [primary], escapeString(name)
-        self.fmt = ('{}.' if printLeft else '') + self.name
+        self.params = [primary]
+        self.op, self.name = op, name
+        self.printLeft = printLeft
+        # self.params, self.name = [primary], escapeString(name)
+        # self.fmt = ('{}.' if printLeft else '') + self.name
+
+    def print_(self, printer, print_):
+        if self.op is None:
+            name = self.name
+            assert(name in ('length','class'))
+        else:
+            cls, name, desc = self.op.target, self.op.name, self.op.desc
+            name = escapeString(printer.fieldName(cls, name, desc))
+        pre = print_(self.params[0])+'.' if self.printLeft else ''
+        return pre+name
+
+    def tree(self, printer, tree):
+        if self.op is None:
+            trip = None, self.name, None
+        else:
+            trip = self.op.target, self.op.name, self.op.desc
+        left = tree(self.params[0]) if self.printLeft else None
+        return [self.__class__.__name__, trip, left]
 
     def addParens_sub(self):
         p0 = self.params[0]
@@ -434,15 +501,27 @@ class FieldAccess(JavaExpression):
             self.params[0] = Parenthesis(p0)
 
 def printFloat(x, isSingle):
-    import math
-    name = 'Float' if isSingle else 'Double'
-    if math.isnan(x):
-        return name + '.NaN'
-    elif math.isinf(x):
-        if x < 0:
-            return name + '.NEGATIVE_INFINITY'
-        return name + '.POSITIVE_INFINITY'
+    #TODO make this less hackish. We only really need the parens if it's preceded by unary minus
+    #note: NaN may have arbitrary sign
+    if math.copysign(1.0, x) == -1.0 and not math.isnan(x):
+        return '(-{})'.format(printFloat(math.copysign(x, 1.0), isSingle))
+
     suffix = 'f' if isSingle else ''
+    if math.isnan(x):
+        return '(0.0{0}/0.0{0})'.format(suffix)
+    elif math.isinf(x):
+        return '(1.0{0}/0.0{0})'.format(suffix)
+
+    if isSingle and x > 0.0:
+        #Try to find more compract representation for floats, since repr treats everything as doubles
+        m, e = math.frexp(x)
+        half_ulp2 = math.ldexp(1.0, max(e - 25, -150)) #don't bother doubling when near the upper range of a given e value
+        half_ulp1 = (half_ulp2/2) if m == 0.5 and e >= -125 else half_ulp2
+        lbound, ubound = x-half_ulp1, x+half_ulp2
+        assert(lbound < x < ubound)
+        s = '{:g}'.format(x).replace('+','')
+        if lbound < float(s) < ubound: #strict ineq to avoid potential double rounding issues
+            return s + suffix
     return repr(x) + suffix
 
 class Literal(JavaExpression):
@@ -454,11 +533,9 @@ class Literal(JavaExpression):
         if vartype == objtypes.StringTT:
             self.str = '"' + escapeString(val) + '"'
         elif vartype == objtypes.IntTT:
-            self.str = repr(int(val))
-            assert('L' not in self.str) #if it did we were passed an invalid value anyway
+            self.str = str(val)
         elif vartype == objtypes.LongTT:
-            self.str = repr(long(val))
-            assert('L' in self.str)
+            self.str = str(val) + 'L'
         elif vartype == objtypes.FloatTT or vartype == objtypes.DoubleTT:
             assert(type(val) == float)
             self.str = printFloat(val, vartype == objtypes.FloatTT)
@@ -472,11 +549,15 @@ class Literal(JavaExpression):
         else:
             assert(0)
 
-    def print_(self):
+    def print_(self, printer, print_):
         if self.str is None:
             #for printing class literals
-            return self.fmt.format(self.params[0].print_())
+            return self.fmt.format(print_(self.params[0]))
         return self.str
+
+    def tree(self, printer, tree):
+        result = tree(self.params[0]) if self.str is None else self.str
+        return [self.__class__.__name__, result, self.dtype]
 
     def _key(self): return self.dtype, self.val
     def __eq__(self, other): return type(self) == type(other) and self._key() == other._key()
@@ -499,10 +580,12 @@ class Local(JavaExpression):
         self.name = None
         self.func = namefunc
 
-    def print_(self):
+    def print_(self, printer, print_):
         if self.name is None:
             self.name = self.func(self)
         return self.name
+
+    def tree(self, printer, tree): return [self.__class__.__name__, self.print_(None, None)]
 
 class MethodInvocation(JavaExpression):
     def __init__(self, left, name, tts, arguments, op, dtype):
@@ -512,22 +595,33 @@ class MethodInvocation(JavaExpression):
             self.params = [left] + arguments
         self.hasLeft = (left is not None)
         self.dtype = dtype
-        self.name = escapeString(name)
+        self.name = name
         self.tts = tts
         self.op = op #keep around for future reference and new merging
 
-    def print_(self):
+    def print_(self, printer, print_):
+        cls, name, desc = self.op.target, self.op.name, self.op.desc
+        if name != self.name:
+            assert(name == '<init>')
+            name = self.name
+        else:
+            name = escapeString(printer.methodName(cls, name, desc))
+
         if self.hasLeft:
             left, arguments = self.params[0], self.params[1:]
-            return '{}.{}({})'.format(left.print_(), self.name, ', '.join(x.print_() for x in arguments))
+            return '{}.{}({})'.format(print_(left), name, ', '.join(print_(x) for x in arguments))
         else:
             arguments = self.params
-            return '{}({})'.format(self.name, ', '.join(x.print_() for x in arguments))
+            return '{}({})'.format(name, ', '.join(print_(x) for x in arguments))
+
+    def tree(self, printer, tree):
+        trip = self.op.target, self.op.name, self.op.desc
+        return [self.__class__.__name__, trip, self.name, self.hasLeft, map(tree, self.params)]
 
     def addCasts_sub(self, env):
         newparams = []
         for tt, expr in zip(self.tts, self.params):
-            if expr.dtype != tt:
+            if expr.dtype != tt and (ALWAYS_CAST_PARAMS or not isJavaAssignable(env, expr.dtype, tt)):
                 expr = makeCastExpr(tt, expr, fixEnv=env)
             newparams.append(expr)
         self.params = newparams
@@ -566,27 +660,33 @@ class TypeName(JavaExpression):
     def __init__(self, tt):
         self.dtype = None
         self.tt = tt
-        name, dim = tt
-        if name[0] == '.': #primative type:
-            name = name[1:]
-        else:
-            name = escapeString(name.replace('/','.'))
-        s = name + '[]'*dim
-        if s.rpartition('.')[0] == 'java.lang':
-            s = s.rpartition('.')[2]
-        self.str = s
 
-    def print_(self): return self.str
+    def print_(self, printer, print_):
+        name = objtypes.className(self.tt)
+        if name is not None:
+            name = printer.className(name)
+            name = escapeString(name.replace('/','.'))
+            if name.rpartition('.')[0] == 'java.lang':
+                name = name.rpartition('.')[2]
+        else:
+            name = objtypes.primName(self.tt)
+        s = name + '[]'*objtypes.dim(self.tt)
+        return s
+
+    def tree(self, printer, tree): return [self.__class__.__name__, self.tt]
+
     def complexity(self): return -1 #exprs which have this as a param won't be bumped up to 1 uncessarily
 
 class CatchTypeNames(JavaExpression): #Used for caught exceptions, which can have multiple types specified
     def __init__(self, env, tts):
-        assert(tts and not any(zip(*tts)[1])) #at least one type, no array types
+        assert(tts and not any(objtypes.dim(tt) for tt in tts)) #at least one type, no array types
         self.tnames = map(TypeName, tts)
         self.dtype = objtypes.commonSupertype(env, tts)
 
-    def print_(self):
-        return ' | '.join(tn.print_() for tn in self.tnames)
+    def print_(self, printer, print_):
+        return ' | '.join(print_(tn) for tn in self.tnames)
+
+    def tree(self, printer, tree): return [self.__class__.__name__, map(tree, self.tnames)]
 
 class UnaryPrefix(JavaExpression):
     precedence = 5
@@ -604,6 +704,7 @@ class UnaryPrefix(JavaExpression):
         if p0.precedence > 5 or (isinstance(p0, UnaryPrefix) and p0.opstr[0] == self.opstr[0]):
             self.params[0] = Parenthesis(p0)
 
+    def tree(self, printer, tree): return [self.__class__.__name__, self.opstr, tree(self.params[0])]
 
 class Dummy(JavaExpression):
     def __init__(self, fmt, params, isNew=False):

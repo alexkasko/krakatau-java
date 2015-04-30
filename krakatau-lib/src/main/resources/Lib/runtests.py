@@ -5,7 +5,7 @@ On the first run tests/*.test files will be created with expected results for ea
 To generate a test's result file, run with `--create-only`.
 To add a new test, add the relevant classfile and an entry in tests.registry.
 '''
-import os, shutil, tempfile
+import os, shutil, tempfile, time
 import subprocess
 import cPickle as pickle
 import optparse
@@ -53,8 +53,8 @@ def performTest(target, expected_results, tempbase=tempfile.gettempdir()):
         print e
     assert(os.path.isdir(temppath))
 
-    decompile.decompileClass(cpath, targets=[target], outpath=temppath)
-    # out, err = execute(['java',  '-jar', 'procyon-decompiler-0.5.11.jar', os.path.join(class_location, target+'.class')], '.')
+    decompile.decompileClass(cpath, targets=[target], outpath=temppath, add_throws=True)
+    # out, err = execute(['java',  '-jar', 'procyon-decompiler-0.5.25.jar', os.path.join(class_location, target+'.class')], '.')
     # if err:
     #     print 'Decompile errors:', err
     #     return False
@@ -94,6 +94,7 @@ if __name__ == '__main__':
     targets = args if args else sorted(tests.registry)
 
     results = {}
+    start_time = time.time()
     for test in targets:
         print 'Doing test {}...'.format(test)
         try:
@@ -108,3 +109,4 @@ if __name__ == '__main__':
     for test in targets:
         print '  {}: {}'.format(test, 'Pass' if results[test] else 'Fail')
     print '{}/{} tests passed'.format(sum(results.itervalues()), len(results))
+    print 'elapsed time:', time.time()-start_time

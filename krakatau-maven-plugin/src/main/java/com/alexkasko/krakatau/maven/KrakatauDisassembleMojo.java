@@ -41,5 +41,6 @@ public class KrakatauDisassembleMojo extends AbstractMojo {
         KrakatauLibrary lib = new KrakatauLibrary();
         if(!outputDir.exists()) outputDir.mkdirs();
         lib.disassemble(Arrays.asList(classFileOrDirs), outputDir);
+        lib.cleanup();
     }
 }
