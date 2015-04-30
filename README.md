@@ -21,7 +21,7 @@ Library dependency (from maven central):
     <dependency>
         <groupId>com.alexkasko.krakatau</groupId>
         <artifactId>krakatau-lib</artifactId>
-        <version>1.0.1</version>
+        <version>1.1</version>
         <classifier>standalone</classifier>
         <exclusions>
             <exclusion>
@@ -86,6 +86,12 @@ This project is released under the [GNU Public License 3.0](http://opensource.or
 
 Changelog
 ---------
+
+**1.1** (2015-04-30)
+
+ * Krakatau, Jython and ECJ updated
+ * language level option added to `compile` task
+ * Jython cleanup fix when running from maven
 
 **1.0.1** (2013-10-03)
 
