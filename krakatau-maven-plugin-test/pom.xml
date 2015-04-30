@@ -71,6 +71,7 @@
                         <classFileOrDir>${project.basedir}/src/test/resources/classes</classFileOrDir>
                     </classFileOrDirs>
                     <!-- compile settings -->
+                    <langLevel>6</langLevel>
                     <sourceFileOrDirs>
                         <sourceFileOrDir>${project.basedir}/src/test/resources/sources</sourceFileOrDir>
                     </sourceFileOrDirs>

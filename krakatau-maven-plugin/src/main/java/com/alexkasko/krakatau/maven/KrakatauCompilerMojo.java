@@ -43,6 +43,12 @@ public class KrakatauCompilerMojo extends AbstractMojo {
      */
     private File outputDir;
     /**
+     * Language level for sources and bytecode to use during compilation (3 - 8), default: 8.
+     *
+     * @parameter expression="${langLevel}" default-value="8"
+     */
+    private int langLevel;
+    /**
      * @parameter default-value="${project}"
      * @required
      * @readonly
@@ -62,6 +68,6 @@ public class KrakatauCompilerMojo extends AbstractMojo {
             classpath.add(ar.getFile());
         }
         if(!outputDir.exists()) outputDir.mkdirs();
-        lib.compile(Arrays.asList(sourceFileOrDirs), classpath, outputDir, new OutputStreamWriter(System.err));
+        lib.compile(Arrays.asList(sourceFileOrDirs), langLevel, classpath, outputDir, new OutputStreamWriter(System.err));
     }
 }

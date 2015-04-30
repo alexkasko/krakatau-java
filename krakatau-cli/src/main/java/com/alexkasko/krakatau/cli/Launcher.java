@@ -20,11 +20,12 @@ import static java.lang.System.out;
  */
 public class Launcher {
 
-    private static final String VERSION = "Krakatau  Copyright (C) 2012-13  Robert Grosse;" +
-            " Java wrapper v1.0 by Alex Kasko (alexkasko.com)";
+    private static final String VERSION = "Krakatau  Copyright (C) 2012-15  Robert Grosse;" +
+            " Java wrapper v1.1 by Alex Kasko (alexkasko.com)";
     private static final String HELP_OPTION = "help";
     private static final String VERSION_OPTION = "version";
     private static final String COMPILE_OPTION = "compile";
+    private static final String COMPILE_LANG_LEVEL_OPTION = "compile-lang-level";
     private static final String DECOMPILE_OPTION = "decompile";
     private static final String DISASSEMBLE_OPTION = "disassemble";
     private static final String ASSEMBLE_OPTION = "assemble";
@@ -34,6 +35,7 @@ public class Launcher {
             .addOption("h", HELP_OPTION, false, "show this page")
             .addOption("v", VERSION_OPTION, false, "show version")
             .addOption("c", COMPILE_OPTION, true, "compile list of source files (or directories) using classpath specified with '-p'")
+            .addOption("l", COMPILE_LANG_LEVEL_OPTION, true, "language level (3-8) to use during complation")
             .addOption("s", DECOMPILE_OPTION, true, "decompile list of fully qualified class names" +
                     " from the specified classpath into source files")
             .addOption("d", DISASSEMBLE_OPTION, true, "disassemble list of class files (or directories) into asm files")
@@ -80,12 +82,13 @@ public class Launcher {
                     cline.hasOption(OUTPUT_OPTION) &&
                     0 == cline.getArgs().length) {
                 System.out.println("Initializing compiler ...");
+                int level = extractLangLevel(cline);
                 List<File> sources = argToFileList(cline.getOptionValue(COMPILE_OPTION));
                 List<File> classpath = cline.hasOption(CLASSPATH_OPTION) ?
                         argToFileList(cline.getOptionValue(CLASSPATH_OPTION)) :
                         Collections.<File>emptyList();
                 File dir = new File(cline.getOptionValue(OUTPUT_OPTION));
-                new KrakatauLibrary().compile(sources, classpath, dir, new OutputStreamWriter(System.err));
+                new KrakatauLibrary().compile(sources, level, classpath, dir, new OutputStreamWriter(System.err));
                 System.out.println("Compilation complete");
             } else {
                 throw new ParseException("Invalid arguments:");
@@ -115,5 +118,12 @@ public class Launcher {
     private static List<String> argToStringList(String arg) {
         String[] parts = arg.split(":");
         return Arrays.asList(parts);
+    }
+
+    private static int extractLangLevel(CommandLine cline) {
+        if (cline.hasOption(COMPILE_LANG_LEVEL_OPTION)) {
+            return Integer.parseInt(cline.getOptionValue(COMPILE_LANG_LEVEL_OPTION));
+        }
+        return 8;
     }
 }

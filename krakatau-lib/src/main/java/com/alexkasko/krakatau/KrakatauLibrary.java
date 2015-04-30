@@ -142,13 +142,16 @@ public class KrakatauLibrary {
      * Compiles list of source files (or directories)
      *
      * @param sources list of source files (or directories)
+     * @param langLevel java language and bytecode compliance level (3 - 8)
      * @param classpathFiles list of classpath entries (.jar files or directories)
      * @param outDir output directory
      * @param errorWriter error writer
      * @throws KrakatauException
      */
-    public void compile(List<File> sources, Collection<File> classpathFiles, File outDir, Writer errorWriter) throws KrakatauException {
+    public void compile(List<File> sources, int langLevel, Collection<File> classpathFiles, File outDir, Writer errorWriter) throws KrakatauException {
         if(null == sources) throw new KrakatauException("Specified 'sources' is null");
+        if(langLevel < 3 || langLevel > 8) throw new KrakatauException("Specified 'langLevel': [" + langLevel + "]" +
+                " not supported, supported levels are from [3] to [7]");
         if(0 == sources.size()) throw new KrakatauException("Specified 'sources' is empty");
         if(null == classpathFiles) throw new KrakatauException("Specified 'classpathFiles' is null");
         if(null == outDir) throw new KrakatauException("Specified 'outDir' is null");
@@ -157,6 +160,7 @@ public class KrakatauLibrary {
         List<String> options = new ArrayList<String>();
         // debug
         options.add("-g");
+        options.add("-1." + langLevel);
         // classpath
         if (classpathFiles.size() > 0) {
             boolean first = true;
@@ -187,6 +191,19 @@ public class KrakatauLibrary {
         } catch (Exception e) {
             throw new KrakatauException("Compile error", e);
         }
+    }
+
+    /**
+     * 1.0 compatibility method, defaults langLevel to 8
+     *
+     * @param sources list of source files (or directories)
+     * @param classpathFiles list of classpath entries (.jar files or directories)
+     * @param outDir output directory
+     * @param errorWriter error writer
+     * @throws KrakatauException
+     */
+    public void compile(List<File> sources, Collection<File> classpathFiles, File outDir, Writer errorWriter) throws KrakatauException {
+        compile(sources, 8, classpathFiles, outDir, errorWriter);
     }
 
     private String toPythonList(Collection<String> col) {
